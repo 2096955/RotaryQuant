@@ -1,25 +1,88 @@
-# IsoQuant: Toward Trillion-Parameter MoE Inference on Consumer Hardware
+# Fused KV Cache Decode for Apple Silicon
 
-Research checkpoint -- open for peer review and contribution.
+**We run attention directly on compressed KV cache -- no reconstruction, no GEMM, fully fused Metal kernels.**
 
 ![The Tiny Kitchen: Fitting 1 Trillion Parameters on Consumer Hardware](docs/images/kitchen-overview.png)
 
-**14.85 tok/s on Nemotron-120B within a 32 GB memory budget on Apple Silicon.**
+Running LLMs on Apple Silicon is bottlenecked by KV cache bandwidth, not compute. This repo implements a fused KV decode pipeline that:
 
-Three independent compression axes -- weight quantisation (4-bit dense, 2-bit routed experts, Q8_0 shared), IsoQuant KV compression (WHT + SO(4) rotation, 3-bit), and LRU expert offloading -- compose into a unified inference system that runs models too large for consumer hardware.
+- **Operates directly on 3-bit packed KV cache** -- no dequantisation to FP16
+- **Avoids materialising K/V tensors entirely** -- attention scores computed inline
+- **Executes attention in rotated space** -- inverse rotation applied once on output, not per-token
+- **Uses custom Metal kernels** -- no GEMM, no dispatch overhead
+- **Replaces O(d^2) dense rotation with O(d log d) structured rotation** -- 11x fewer FMAs
+
+Result: **14.85 tok/s on a 120B-parameter model within 17.2 GB** on an M4 Max. Quality parity with uncompressed KV (delta PPL +0.001). Validated with 12/12 correctness and a 2-hour soak test.
 
 ---
 
-## Current Status
+## What's Different
 
-| Model | Params | tok/s | Peak Memory | Quality | Soak |
-|------------|--------|-------|-------------|---------|------|
-| Gemma 4 | 26B | 12.85 | 5.4 GB | 12/12 | 2 h pass |
-| Nemotron-H | 120B | 14.85 | 17.2 GB | 12/12 | 2 h pass |
+```
+Standard KV decode:
+  K/V cache → dequantise → full matmul → softmax → full matmul → output
 
-All measurements taken on Apple M4 Max (128 GB unified memory, 40 GPU cores, macOS 15.4). Result JSONs are pinned under `results/`.
+This repo:
+  packed 3-bit KV → fused_qk_dot → softmax → fused_value_accum → inverse_rotate → output
+                     (no K/V materialised)
+```
 
-The goal is 1T-parameter inference on 128 GB consumer hardware. The 120B result demonstrates the architecture scales.
+| Method | Rotation | K/V materialised? | Decode FMAs | Stored params |
+|--------|----------|-------------------|-------------|---------------|
+| TurboQuant | Dense random | Yes (reconstruct) | O(d^2) | 16,384 |
+| SpinQuant | Learned dense | Yes | O(d^2) | 16,384 |
+| RotorQuant | Geometric algebra | No (claimed) | O(d log d) | ~256 |
+| **IsoQuant (this work)** | **WHT + SO(4)** | **No (fused Metal)** | **O(d log d)** | **256** |
+
+We sit between TurboQuant and RotorQuant: we already did the hard systems work (fusion, memory elimination) using structured rotations that work with existing models today.
+
+---
+
+## The Fused Metal Pipeline
+
+Four kernels, zero K/V reconstruction:
+
+| Kernel | Operation | What it replaces |
+|--------|-----------|------------------|
+| **A: `fused_qk_dot`** | QK attention scores directly on 3-bit packed K | Dequant + matmul |
+| **B: `mx.softmax`** | Standard softmax | (unchanged) |
+| **C: `fused_value_accum`** | Weighted value sum on 3-bit packed V | Dequant + matmul |
+| **D: `metal_rotate_inverse`** | WHT butterfly + SO(4) block inverse (1,408 FMAs) | Dense inverse (16,384 FMAs) |
+
+**Kernel C dominates runtime.** We introduce a dual-strategy kernel to handle different sequence-length regimes -- this is the key systems insight.
+
+---
+
+## Results
+
+| Model | tok/s | Peak Memory | Budget | Quality | 2h Soak |
+|-------|-------|-------------|--------|---------|---------|
+| **Gemma 4-26B** | 12.85 | 5.4 GB | 16 GB | 12/12 | RSS 1.18x |
+| **Nemotron-H 120B** | 14.85 | 17.2 GB | 32 GB | 12/12 | RSS 0.994x |
+
+### KV Fidelity -- IsoQuant vs TurboQuant vs Baseline
+
+| Model | IsoQuant delta PPL | TurboQuant delta PPL |
+|-------|--------------------|----------------------|
+| Qwen3-30B-A3B | **+0.0009** | +0.0405 |
+| Gemma 4-26B | **+0.0000** | +0.0622 |
+| Nemotron-30B | **+0.0012** | +0.0039 |
+
+IsoQuant achieves quality parity with uncompressed KV. TurboQuant does not.
+
+### llama.cpp Integration
+
+IsoQuant is integrated as `GGML_TYPE_ISOQUANT3_0` with a fused Metal shader (`kernel_turbo_wht_so4`). The fused kernel eliminates 280 extra kernel launches:
+
+| Configuration | Prompt (t/s) | Gen (t/s) |
+|---|---|---|
+| turbo3 (baseline) | 4114.6 | 100.15 |
+| **isoquant3 fused** | **4093.8 (-0.5%)** | **96.98 (-3.2%)** |
+| isoquant3 composed (unfused) | 2306.2 (-44%) | 81.92 (-18%) |
+
+The fused kernel recovers near-baseline throughput. The unfused path shows why fusion matters: **44% prompt regression without it.**
+
+All measurements on Apple M4 Max (128 GB, 40 GPU cores, macOS 15.4). Pinned artifacts under `results/`.
 
 ---
 
@@ -32,13 +95,7 @@ cd mlx-lm && pip install -e .               # MLX inference engine
 python -m mlx_lm.server --model <model> --kv-cache-type isoquant --port 8000
 ```
 
-Note: this project requires an editable install from a git clone. PyPI distribution is not yet supported.
-
----
-
-## Use with Claude Code
-
-Start the local server, then point Claude Code at it:
+### Use with Claude Code
 
 ```bash
 python -m mlx_lm.server --model <model> --kv-cache-type isoquant --port 8000 &

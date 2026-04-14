@@ -38,6 +38,18 @@ We sit between TurboQuant and RotorQuant: we already did the hard systems work (
 
 ---
 
+## Key Insight
+
+The bottleneck is not attention compute -- it is KV reconstruction.
+
+Standard pipelines dequantise KV back to FP16, materialise full tensors, then run attention via GEMM. The reconstruction itself is the cost -- it saturates memory bandwidth before compute even begins.
+
+This repo eliminates that step entirely. Attention runs directly on 3-bit packed data in registers. No tensors are materialised. No GEMM is called. Compute happens where data already is.
+
+**This is a different execution model, not just a quantisation scheme.**
+
+---
+
 ## The Fused Metal Pipeline
 
 Four kernels, zero K/V reconstruction:
@@ -50,6 +62,32 @@ Four kernels, zero K/V reconstruction:
 | **D: `metal_rotate_inverse`** | WHT butterfly + SO(4) block inverse (1,408 FMAs) | Dense inverse (16,384 FMAs) |
 
 **Kernel C dominates runtime.** We introduce a dual-strategy kernel to handle different sequence-length regimes -- this is the key systems insight.
+
+### Verified on Apple M4 Max (Metal)
+
+- Full GPU execution (no MLX fallback)
+- Custom Metal kernels (no matmul / no gather)
+- End-to-end correctness vs CPU reference: max error 3.8e-06
+
+| Kernel | Description | Time (ms) |
+|--------|------------|-----------|
+| A | fused QK dot (3-bit decode) | 0.14--0.17 |
+| B | softmax | 0.13--0.15 |
+| C | fused value accumulation | **0.79 (dominant)** |
+| D | WHT + SO(4) inverse | 0.11--0.14 |
+
+---
+
+## Why This Is Non-Trivial
+
+This is not just quantisation:
+
+- **3-bit values are bit-packed** -- must decode inside the kernel, not before it
+- **No tensor materialisation** -- everything happens in registers
+- **Rotation cannot be dense** -- replaced with WHT + SO(4) structured decomposition
+- **GPU occupancy varies by regime** -- requires dual Kernel C strategies (short vs long sequence)
+
+Most implementations avoid this by reconstructing tensors and calling GEMM. We explicitly avoid that.
 
 ---
 
@@ -84,6 +122,20 @@ The fused kernel recovers near-baseline throughput. The unfused path shows why f
 
 All measurements on Apple M4 Max (128 GB, 40 GPU cores, macOS 15.4). Pinned artifacts under `results/`.
 
+### When This Wins
+
+- **Long context (T >= 2K)** -- bandwidth savings compound with sequence length
+- **Memory-bound regimes** -- when KV cache size dominates available bandwidth
+- **Large models on constrained hardware** -- 120B in 17 GB, 26B in 5.4 GB
+
+### When It Does Not
+
+- **Short sequences** -- dispatch overhead dominates at low T
+- **Small batch sizes** -- kernel launch cost amortises poorly
+- **Highly optimised GEMM backends** -- if your backend already saturates ALUs, bandwidth isn't the bottleneck
+
+This is a bandwidth optimisation, not a universal speedup. It matters most when KV cache is the wall.
+
 ---
 
 ## Quick Start
@@ -102,6 +154,16 @@ python -m mlx_lm.server --model <model> --kv-cache-type isoquant --port 8000 &
 ANTHROPIC_BASE_URL=http://localhost:8000/v1 claude code
 ```
 
+### Reproduce Benchmark
+
+```bash
+cd mlx-lm && pip install -e ".[test]"
+python scripts/benchmark_fused_attention.py \
+  --value-kernel auto \
+  --bench-iters 100 \
+  --json-out results.json
+```
+
 ---
 
 ## Repository Structure
@@ -115,6 +177,17 @@ ANTHROPIC_BASE_URL=http://localhost:8000/v1 claude code
 | `results/` | Pinned benchmark artifacts and comparison outputs |
 | `docs/` | Paper, benchmark spec, supporting documentation |
 | `src/isoquant_mlx/` | CLI wrapper package (serve, validate, bench, convert) |
+
+---
+
+## Roadmap
+
+- [ ] llama.cpp full integration (`ggml-metal` backend, replace `ggml_compute_forward_flash_attn`)
+- [ ] Single command-buffer fusion (remove remaining dispatch overhead)
+- [ ] Kernel A+C fusion (eliminate intermediate score tensor)
+- [ ] Larger context benchmarks (T >= 8K, T >= 32K)
+- [ ] CUDA / Vulkan backend
+- [ ] 1T-parameter validation on 128 GB hardware (Kimi-K2.5, 384 experts)
 
 ---
 

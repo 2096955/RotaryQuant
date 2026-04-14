@@ -309,8 +309,8 @@ Both TurboQuant and IsoQuant follow the same four-stage pipeline for compressing
 graph LR
     A[FP16 Key Vector k] --> B[Step 1. Normalise]
     B --> C{Step 2. Rotate Pi}
-    C -- "Dense (TurboQuant)" --> D[O d_k^2 FMAs]
-    C -- "Structured (IsoQuant)" --> E[O d_k log d_k FMAs]
+    C -- "Dense TurboQuant" --> D["O(d_k²) FMAs"]
+    C -- "Structured IsoQuant" --> E["O(d_k log d_k) FMAs"]
     D --> F[Step 3. Scalar Quantise]
     E --> F
     F --> G[Step 4. Bit-pack & Store]

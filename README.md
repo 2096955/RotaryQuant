@@ -71,6 +71,8 @@ ANTHROPIC_BASE_URL=http://localhost:8000/v1 claude code
 
 **Podcast:** [Fitting a 120B Model on a MacBook — NotebookLM Breakdown](docs/Fitting_a_120B_model_on_a_MacBook.m4a) (download to listen)
 
+**Video:** [AI & the Yum Cha Kitchen](docs/AI_&_the_Yum_Cha_Kitchen.mp4) (download to watch)
+
 *Welcome to the kitchen of the future. As both a Distinguished Professor of Computer Architecture and a Michelin-starred Dim Sum Chef, I find that the most complex engineering challenges are best understood through the steam of a bamboo basket.*
 
 Today, we face a "Kitchen Crisis." We have recipes for a trillion-parameter feast -- the world's most advanced Mixture-of-Experts (MoE) models -- but we are attempting to cook them in a standard home kitchen. This primer explains how we use architectural rigor and culinary finesse to make a 1T-parameter model fit on a consumer-grade counter.

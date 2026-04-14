@@ -1,0 +1,265 @@
+{
+  "model": "sjug/Nemotron-3-Super-120B-A12B-MLX-4bit",
+  "duration_s": 7298.0,
+  "duration_mins": 120,
+  "iterations": 27,
+  "kv_cache_type": "isoquant",
+  "expert_offload": true,
+  "max_resident_experts": 4096,
+  "memory_limit_mb": 25600.0,
+  "tok_per_s_p50": 2.0,
+  "tok_per_s_p95": 2.1,
+  "tok_per_s_p99": 2.2,
+  "tok_per_s_min": 1.3,
+  "tok_per_s_max": 2.2,
+  "p99_div_p50": 1.09,
+  "peak_memory_mb": 17801.8,
+  "initial_rss_mb": 17192.5,
+  "final_rss_mb": 17242.0,
+  "rss_drift_ratio": 1.0,
+  "measurements": [
+    {
+      "iteration": 0,
+      "elapsed_total_s": 346.8,
+      "generation_s": 346.81,
+      "tokens": 500,
+      "tok_per_s": 1.4,
+      "peak_memory_mb": 17714.6,
+      "process_rss_mb": 17192.5
+    },
+    {
+      "iteration": 1,
+      "elapsed_total_s": 625.5,
+      "generation_s": 278.6,
+      "tokens": 500,
+      "tok_per_s": 1.8,
+      "peak_memory_mb": 17714.6,
+      "process_rss_mb": 17230.6
+    },
+    {
+      "iteration": 2,
+      "elapsed_total_s": 903.0,
+      "generation_s": 277.49,
+      "tokens": 500,
+      "tok_per_s": 1.8,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17233.1
+    },
+    {
+      "iteration": 3,
+      "elapsed_total_s": 1165.5,
+      "generation_s": 262.46,
+      "tokens": 500,
+      "tok_per_s": 1.9,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17236.5
+    },
+    {
+      "iteration": 4,
+      "elapsed_total_s": 1442.5,
+      "generation_s": 277.01,
+      "tokens": 500,
+      "tok_per_s": 1.8,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17238.7
+    },
+    {
+      "iteration": 5,
+      "elapsed_total_s": 1720.7,
+      "generation_s": 278.18,
+      "tokens": 500,
+      "tok_per_s": 1.8,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17239.1
+    },
+    {
+      "iteration": 6,
+      "elapsed_total_s": 2072.6,
+      "generation_s": 351.86,
+      "tokens": 500,
+      "tok_per_s": 1.4,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17238.4
+    },
+    {
+      "iteration": 7,
+      "elapsed_total_s": 2469.6,
+      "generation_s": 396.97,
+      "tokens": 500,
+      "tok_per_s": 1.3,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17237.7
+    },
+    {
+      "iteration": 8,
+      "elapsed_total_s": 2800.0,
+      "generation_s": 330.44,
+      "tokens": 500,
+      "tok_per_s": 1.5,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17240.0
+    },
+    {
+      "iteration": 9,
+      "elapsed_total_s": 3071.7,
+      "generation_s": 271.68,
+      "tokens": 500,
+      "tok_per_s": 1.8,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17240.3
+    },
+    {
+      "iteration": 10,
+      "elapsed_total_s": 3330.1,
+      "generation_s": 258.34,
+      "tokens": 500,
+      "tok_per_s": 1.9,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17240.4
+    },
+    {
+      "iteration": 11,
+      "elapsed_total_s": 3578.9,
+      "generation_s": 248.8,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17240.7
+    },
+    {
+      "iteration": 12,
+      "elapsed_total_s": 3834.2,
+      "generation_s": 255.24,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.0
+    },
+    {
+      "iteration": 13,
+      "elapsed_total_s": 4077.9,
+      "generation_s": 243.71,
+      "tokens": 500,
+      "tok_per_s": 2.1,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.0
+    },
+    {
+      "iteration": 14,
+      "elapsed_total_s": 4329.5,
+      "generation_s": 251.6,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.2
+    },
+    {
+      "iteration": 15,
+      "elapsed_total_s": 4581.3,
+      "generation_s": 251.74,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.3
+    },
+    {
+      "iteration": 16,
+      "elapsed_total_s": 4830.1,
+      "generation_s": 248.81,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.4
+    },
+    {
+      "iteration": 17,
+      "elapsed_total_s": 5085.6,
+      "generation_s": 255.47,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17240.1
+    },
+    {
+      "iteration": 18,
+      "elapsed_total_s": 5329.7,
+      "generation_s": 244.12,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.4
+    },
+    {
+      "iteration": 19,
+      "elapsed_total_s": 5581.5,
+      "generation_s": 251.74,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.4
+    },
+    {
+      "iteration": 20,
+      "elapsed_total_s": 5829.0,
+      "generation_s": 247.46,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.6
+    },
+    {
+      "iteration": 21,
+      "elapsed_total_s": 6081.3,
+      "generation_s": 252.34,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.6
+    },
+    {
+      "iteration": 22,
+      "elapsed_total_s": 6322.1,
+      "generation_s": 240.74,
+      "tokens": 500,
+      "tok_per_s": 2.1,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.7
+    },
+    {
+      "iteration": 23,
+      "elapsed_total_s": 6550.5,
+      "generation_s": 228.4,
+      "tokens": 500,
+      "tok_per_s": 2.2,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17241.9
+    },
+    {
+      "iteration": 24,
+      "elapsed_total_s": 6798.1,
+      "generation_s": 247.56,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17242.0
+    },
+    {
+      "iteration": 25,
+      "elapsed_total_s": 7049.1,
+      "generation_s": 251.01,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17242.1
+    },
+    {
+      "iteration": 26,
+      "elapsed_total_s": 7298.0,
+      "generation_s": 248.87,
+      "tokens": 500,
+      "tok_per_s": 2.0,
+      "peak_memory_mb": 17801.8,
+      "process_rss_mb": 17242.0
+    }
+  ]
+}

@@ -1,0 +1,164 @@
+{
+  "version": 1,
+  "model_path": "gemma-4-26b-a4b-it-4bit",
+  "expert_offload": true,
+  "max_resident_experts": 128,
+  "max_cached_shards": null,
+  "kv_cache_type": "isoquant",
+  "use_predictor": false,
+  "memory_mode": "scratchpad",
+  "memory_note_chars": 1200,
+  "repair_attempts": 1,
+  "seed": 42,
+  "temp": 0.0,
+  "max_tokens": 260,
+  "memory": {
+    "peak_mb": 8594.2,
+    "cap_mb": 19200.0,
+    "capped": true,
+    "fits_cap": true
+  },
+  "system_prompt": "You are continuing a Python coding task after a hard context reset. Use the saved external memory if provided. Preserve prior symbols named in the memory unless the current step explicitly asks to remove them. Output only the complete Python module, with no explanation.",
+  "system_before_load": {
+    "process_rss_mb": 443.19,
+    "swap_used_mb": 36444.25,
+    "vm_pages_paged_out": null
+  },
+  "system_after_load": {
+    "process_rss_mb": 2879.67,
+    "swap_used_mb": 36444.25,
+    "vm_pages_paged_out": null
+  },
+  "tasks": [
+    {
+      "name": "merge_sort_module",
+      "description": "Incrementally build merge sort with tests.",
+      "steps": [
+        {
+          "step": "merge_helper",
+          "expected_symbols": [
+            "merge_sorted"
+          ],
+          "must_preserve_symbols": [],
+          "memory_mode": "scratchpad",
+          "saved_memory_note": "Saved external memory: none.",
+          "passed": true,
+          "attempts_used": 2,
+          "attempts_allowed": 2,
+          "latency_s": 54.65,
+          "decode_hit_rate": 0.0,
+          "preserve_hit_rate": null,
+          "failures": [],
+          "features": {
+            "imports": [],
+            "classes": [],
+            "functions": [
+              "merge_sorted"
+            ],
+            "tests": []
+          },
+          "code_preview": "def merge_sorted(left: list[int], right: list[int]) -> list[int]:\n    merged = []\n    i = 0\n    j = 0\n    \n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            merged.append(left[i])\n            i += 1\n        else:\n            merged.append(right[j])\n            j += 1\n            \n    # Append remaining elements from left\n    while i < len(left):\n        merged"
+        },
+        {
+          "step": "merge_sort",
+          "expected_symbols": [
+            "merge_sorted",
+            "merge_sort"
+          ],
+          "must_preserve_symbols": [
+            "merge_sorted"
+          ],
+          "memory_mode": "scratchpad",
+          "saved_memory_note": "Saved external memory from prior turns:\n- functions: merge_sorted\n- code skeleton:\n  def merge_sorted(left: list[int], right: list[int]) -> list[int]:",
+          "passed": false,
+          "attempts_used": 2,
+          "attempts_allowed": 2,
+          "latency_s": 55.01,
+          "decode_hit_rate": 0.0,
+          "preserve_hit_rate": 1.0,
+          "failures": [
+            "SyntaxError: invalid syntax (line 34)"
+          ],
+          "features": {
+            "imports": [],
+            "classes": [],
+            "functions": [
+              "merge_sorted",
+              "merge_sort"
+            ],
+            "tests": []
+          },
+          "code_preview": "def merge_sorted(left: list[int], right: list[int]) -> list[int]:\n    result = []\n    i = 0\n    j = 0\n    \n    while i < len(left) and j < len(right):\n        if left[i] <= right[j]:\n            result.append(left[i])\n            i += 1\n        else:\n            result.append(right[j])\n            j += 1\n            \n    while i < len(left):\n        result.append(left[i])\n        i += 1\n        \n "
+        },
+        {
+          "step": "tests_and_docs",
+          "expected_symbols": [
+            "merge_sorted",
+            "merge_sort",
+            "pytest"
+          ],
+          "must_preserve_symbols": [
+            "merge_sorted",
+            "merge_sort"
+          ],
+          "memory_mode": "scratchpad",
+          "saved_memory_note": "Saved external memory from prior turns:\n- functions: merge_sorted\n- code skeleton:\n  def merge_sorted(left: list[int], right: list[int]) -> list[int]:",
+          "passed": true,
+          "attempts_used": 2,
+          "attempts_allowed": 2,
+          "latency_s": 55.13,
+          "decode_hit_rate": 0.0,
+          "preserve_hit_rate": 1.0,
+          "failures": [],
+          "features": {
+            "imports": [
+              "import pytest"
+            ],
+            "classes": [],
+            "functions": [
+              "merge_sorted",
+              "merge_sort",
+              "test_merge_sort_empty",
+              "test_merge_sort_duplicates",
+              "test_merge_sort_sorted_input"
+            ],
+            "tests": [
+              "test_merge_sort_empty",
+              "test_merge_sort_duplicates",
+              "test_merge_sort_sorted_input"
+            ]
+          },
+          "code_preview": "import pytest\n\ndef merge_sorted(left: list[int], right: list[int]) -> list[int]:\n    \"\"\"Merges two sorted lists into a single sorted list.\"\"\"\n    return sorted(left + right)\n\ndef merge_sort(data: list[int]) -> list[int]:\n    \"\"\"Performs a merge sort algorithm on a list of integers.\"\"\"\n    if len(data) <= 1:\n        return data\n    mid = len(data) // 2\n    left = merge_sort(data[:mid])\n    right = "
+        }
+      ],
+      "summary": {
+        "n_passed": 2,
+        "n_total": 3,
+        "pass_rate": 0.6667,
+        "avg_preserve_hit_rate": 1.0,
+        "total_attempts_used": 6,
+        "repair_turns_used": 3,
+        "total_latency_s": 164.79
+      }
+    }
+  ],
+  "summary": {
+    "n_tasks": 1,
+    "n_tasks_fully_passed": 0,
+    "avg_task_pass_rate": 0.6667,
+    "avg_preserve_hit_rate": 1.0,
+    "total_repair_turns_used": 3,
+    "overall_passed": false
+  },
+  "system_at_end": {
+    "process_rss_mb": 3044.59,
+    "swap_used_mb": 36444.25,
+    "vm_pages_paged_out": null
+  },
+  "system_deltas": {
+    "rss_mb_load_delta": 2436.48,
+    "rss_mb_total_delta": 2601.4,
+    "swap_used_mb_delta": 0.0,
+    "vm_pages_paged_out_delta": null
+  }
+}

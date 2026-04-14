@@ -1,0 +1,14 @@
+[project]
+name = "mojo-bench"
+version = "0.1.0"
+description = "Kernel benchmarks for Mojo on Apple Silicon"
+authors = ["Gemini CLI"]
+channels = ["conda-forge", "modular"]
+platforms = ["osx-arm64"]
+
+[dependencies]
+mojo = ">=26.0"
+
+[tasks]
+bench-all = "mojo run harness/noop_dispatch.mojo"
+calibrate = "python ../scripts/roofline_calibrate.py"

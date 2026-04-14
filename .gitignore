@@ -1,0 +1,65 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+*.so
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+
+# IDE/Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Claude Code / Agent configs
+.claude/
+.cursor/
+.gemini/
+.genkit/
+
+# Model weights (too large for GitHub — use HuggingFace)
+*.safetensors
+*.gguf
+*.bin
+*.npz
+!turboquant-mlx/codebooks/*.npz
+!mlx-lm/mlx_lm/models/turboquant_codebooks/*.npz
+
+# Pixi (Mojo package manager cache)
+.pixi/
+
+# Rust build
+target/
+
+# Testing/Linting
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+htmlcov/
+.coverage
+pip-wheel-metadata/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+logs/
+*.log
+firebase-debug.log
+
+# Development artifacts
+claude-progress.txt
+tmp_*.pdf
+.benchmarks/
+.rtk/

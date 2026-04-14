@@ -1,0 +1,123 @@
+{
+  "schema_version": 3,
+  "model": "mlx-community/Qwen3-30B-A3B-4bit/snapshots/d388dead1515f5e085ef7a0431dd8fadf0886c57",
+  "seed": 42,
+  "kv_cache_type": "isoquant",
+  "expert_offload": true,
+  "max_resident_experts": 4096,
+  "component_definitions": {
+    "kv_attention_ms": "Self-attention: QKV projection + attention + output projection",
+    "routed_expert_ms": "MoE routing: gate/router + expert compute + expert I/O (disk/LRU)",
+    "dense_ffn_ms": "Dense feedforward MLP (non-routed layers)",
+    "other_ms": "Linear attention (Qwen3Next GatedDeltaNet), Mamba/SSM (Nemotron), or unclassified",
+    "uninstrumented_ms": "Derived: total_step_ms minus instrumented sum (embedding, layer norms, residual adds, lm_head)"
+  },
+  "runs": [
+    {
+      "label": "cold",
+      "note": "cold start",
+      "prefill_tokens": 128,
+      "prefill_ms": 1759.6,
+      "decode_tokens": 64,
+      "decode_wall_ms": 7428.1,
+      "kv_attention_ms": {
+        "mean_ms": 61.202,
+        "median_ms": 57.435,
+        "p95_ms": 82.396,
+        "sum_ms": 3916.908
+      },
+      "routed_expert_ms": {
+        "mean_ms": 53.107,
+        "median_ms": 48.314,
+        "p95_ms": 76.366,
+        "sum_ms": 3398.833
+      },
+      "dense_ffn_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "other_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "uninstrumented_ms": {
+        "mean_ms": 1.509,
+        "median_ms": 1.564,
+        "p95_ms": 2.169,
+        "sum_ms": 96.602
+      },
+      "total_step_ms": {
+        "mean_ms": 115.818,
+        "median_ms": 108.772,
+        "p95_ms": 161.884,
+        "sum_ms": 7412.343
+      },
+      "instrumented_sum_ms": 7315.7,
+      "reconciliation_error_pct": 0.2,
+      "kv_attention_pct": 52.8,
+      "routed_expert_pct": 45.9,
+      "dense_ffn_pct": 0.0,
+      "other_pct": 0.0,
+      "uninstrumented_pct": 1.3,
+      "peak_memory_mb": 5413.6,
+      "rss_mb": 5623.2
+    },
+    {
+      "label": "warm",
+      "note": "expert LRU cache warm from cold run; fresh KV cache",
+      "prefill_tokens": 128,
+      "prefill_ms": 355.4,
+      "decode_tokens": 64,
+      "decode_wall_ms": 6906.5,
+      "kv_attention_ms": {
+        "mean_ms": 58.054,
+        "median_ms": 52.763,
+        "p95_ms": 80.189,
+        "sum_ms": 3715.481
+      },
+      "routed_expert_ms": {
+        "mean_ms": 48.293,
+        "median_ms": 43.92,
+        "p95_ms": 72.585,
+        "sum_ms": 3090.757
+      },
+      "dense_ffn_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "other_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "uninstrumented_ms": {
+        "mean_ms": 1.342,
+        "median_ms": 1.136,
+        "p95_ms": 1.942,
+        "sum_ms": 85.88
+      },
+      "total_step_ms": {
+        "mean_ms": 107.689,
+        "median_ms": 97.089,
+        "p95_ms": 154.51,
+        "sum_ms": 6892.118
+      },
+      "instrumented_sum_ms": 6806.2,
+      "reconciliation_error_pct": 0.2,
+      "kv_attention_pct": 53.9,
+      "routed_expert_pct": 44.8,
+      "dense_ffn_pct": 0.0,
+      "other_pct": 0.0,
+      "uninstrumented_pct": 1.2,
+      "peak_memory_mb": 5566.4,
+      "rss_mb": 5647.6
+    }
+  ]
+}

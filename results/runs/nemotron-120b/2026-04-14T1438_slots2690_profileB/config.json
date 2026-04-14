@@ -1,0 +1,11 @@
+{
+  "model": "models/nemotron-120b-mixed",
+  "max_resident_experts": 2690,
+  "kv_cache_type": "isoquant",
+  "target_envelope_mb": 25600,
+  "profile": "B",
+  "prefill_tokens": 1024,
+  "decode_tokens": 256,
+  "expert_shard_bits": 2,
+  "note": "Run after extended GPU session \u2014 thermal throttling likely affecting throughput"
+}

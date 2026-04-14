@@ -1,0 +1,123 @@
+{
+  "schema_version": 3,
+  "model": "nemotron-30b-mixed",
+  "seed": 42,
+  "kv_cache_type": "isoquant",
+  "expert_offload": true,
+  "max_resident_experts": 2048,
+  "component_definitions": {
+    "kv_attention_ms": "Self-attention: QKV projection + attention + output projection",
+    "routed_expert_ms": "MoE routing: gate/router + expert compute + expert I/O (disk/LRU)",
+    "dense_ffn_ms": "Dense feedforward MLP (non-routed layers)",
+    "other_ms": "Linear attention (Qwen3Next GatedDeltaNet), Mamba/SSM (Nemotron), or unclassified",
+    "uninstrumented_ms": "Derived: total_step_ms minus instrumented sum (embedding, layer norms, residual adds, lm_head)"
+  },
+  "runs": [
+    {
+      "label": "cold",
+      "note": "cold start",
+      "prefill_tokens": 128,
+      "prefill_ms": 799.3,
+      "decode_tokens": 64,
+      "decode_wall_ms": 3818.6,
+      "kv_attention_ms": {
+        "mean_ms": 7.792,
+        "median_ms": 7.696,
+        "p95_ms": 9.202,
+        "sum_ms": 498.718
+      },
+      "routed_expert_ms": {
+        "mean_ms": 36.45,
+        "median_ms": 36.181,
+        "p95_ms": 45.593,
+        "sum_ms": 2332.795
+      },
+      "dense_ffn_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "other_ms": {
+        "mean_ms": 13.285,
+        "median_ms": 12.658,
+        "p95_ms": 19.229,
+        "sum_ms": 850.248
+      },
+      "uninstrumented_ms": {
+        "mean_ms": 1.885,
+        "median_ms": 1.887,
+        "p95_ms": 2.527,
+        "sum_ms": 120.656
+      },
+      "total_step_ms": {
+        "mean_ms": 59.413,
+        "median_ms": 58.44,
+        "p95_ms": 75.082,
+        "sum_ms": 3802.417
+      },
+      "instrumented_sum_ms": 3681.8,
+      "reconciliation_error_pct": 0.4,
+      "kv_attention_pct": 13.1,
+      "routed_expert_pct": 61.4,
+      "dense_ffn_pct": 0.0,
+      "other_pct": 22.4,
+      "uninstrumented_pct": 3.2,
+      "peak_memory_mb": 4222.5,
+      "rss_mb": 4424.5
+    },
+    {
+      "label": "warm",
+      "note": "expert LRU cache warm from cold run; fresh KV cache",
+      "prefill_tokens": 128,
+      "prefill_ms": 236.4,
+      "decode_tokens": 64,
+      "decode_wall_ms": 3087.8,
+      "kv_attention_ms": {
+        "mean_ms": 6.609,
+        "median_ms": 5.915,
+        "p95_ms": 9.577,
+        "sum_ms": 422.981
+      },
+      "routed_expert_ms": {
+        "mean_ms": 28.655,
+        "median_ms": 22.915,
+        "p95_ms": 48.349,
+        "sum_ms": 1833.901
+      },
+      "dense_ffn_ms": {
+        "mean_ms": 0.0,
+        "median_ms": 0.0,
+        "p95_ms": 0.0,
+        "sum_ms": 0.0
+      },
+      "other_ms": {
+        "mean_ms": 11.313,
+        "median_ms": 9.023,
+        "p95_ms": 20.468,
+        "sum_ms": 724.006
+      },
+      "uninstrumented_ms": {
+        "mean_ms": 1.445,
+        "median_ms": 1.103,
+        "p95_ms": 2.565,
+        "sum_ms": 92.486
+      },
+      "total_step_ms": {
+        "mean_ms": 48.021,
+        "median_ms": 38.83,
+        "p95_ms": 81.293,
+        "sum_ms": 3073.374
+      },
+      "instrumented_sum_ms": 2980.9,
+      "reconciliation_error_pct": 0.5,
+      "kv_attention_pct": 13.8,
+      "routed_expert_pct": 59.7,
+      "dense_ffn_pct": 0.0,
+      "other_pct": 23.6,
+      "uninstrumented_pct": 3.0,
+      "peak_memory_mb": 4516.4,
+      "rss_mb": 4425.7
+    }
+  ]
+}

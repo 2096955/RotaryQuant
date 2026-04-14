@@ -1,0 +1,9 @@
+{
+  "model": "models/nemotron-120b-mixed",
+  "max_resident_experts": 2690,
+  "kv_cache_type": "isoquant",
+  "target_envelope_mb": 25600,
+  "profile": "B",
+  "expert_shard_bits": 2,
+  "estimated_mb_per_slot": 1.6
+}

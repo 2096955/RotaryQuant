@@ -1,0 +1,33 @@
+[project]
+name = "isoquant-mlx"
+version = "0.1.0a1"
+description = "IsoQuant KV compression + expert offloading for Apple Silicon LLM inference"
+requires-python = ">=3.10"
+license = "Apache-2.0"
+readme = "README.md"
+authors = [{name = "RotaryQuant Contributors"}]
+dependencies = [
+    "mlx>=0.31.0",
+    "huggingface-hub>=0.20.0",
+    "safetensors>=0.4.0",
+    "numpy",
+]
+
+[project.optional-dependencies]
+serve = ["fastapi>=0.100.0", "uvicorn>=0.30.0"]
+dev = ["pytest", "ruff"]
+bench = ["scipy", "matplotlib"]
+
+[project.scripts]
+isoquant = "isoquant_mlx.cli:main"
+
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

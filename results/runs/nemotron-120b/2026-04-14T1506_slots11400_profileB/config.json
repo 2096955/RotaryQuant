@@ -1,0 +1,10 @@
+{
+  "model": "models/nemotron-120b-mixed",
+  "max_resident_experts": 11400,
+  "kv_cache_type": "isoquant",
+  "target_envelope_mb": 25600,
+  "profile": "B",
+  "prefill_tokens": 1024,
+  "decode_tokens": 256,
+  "rationale": "Fill the 32GB envelope \u2014 11400 slots is the calculated maximum at 25GB target"
+}

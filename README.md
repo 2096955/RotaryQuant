@@ -61,9 +61,9 @@ ANTHROPIC_BASE_URL=http://localhost:8000/v1 claude code
 
 ---
 
-## System Architecture
+## Mind Map
 
-![System Mind Map](docs/images/system-mindmap.png)
+![NotebookLM Mind Map](docs/images/system-mindmap.png)
 
 ---
 

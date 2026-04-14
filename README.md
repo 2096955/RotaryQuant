@@ -1,18 +1,50 @@
 # Fused KV Cache Decode for Apple Silicon
 
-**We run attention directly on compressed KV cache -- no reconstruction, no GEMM, fully fused Metal kernels.**
+**This repository implements a new execution model for attention: run attention directly on compressed KV cache -- no reconstruction, no GEMM, fully fused Metal kernels, with parallel Mojo kernel prototypes for portability.**
 
 ![The Tiny Kitchen: Fitting 1 Trillion Parameters on Consumer Hardware](docs/images/kitchen-overview.png)
 
-Running LLMs on Apple Silicon is bottlenecked by KV cache bandwidth, not compute. This repo implements a fused KV decode pipeline that:
+## TL;DR (Apple M4 Max)
 
-- **Operates directly on 3-bit packed KV cache** -- no dequantisation to FP16
-- **Avoids materialising K/V tensors entirely** -- attention scores computed inline
-- **Executes attention in rotated space** -- inverse rotation applied once on output, not per-token
-- **Uses custom Metal kernels** -- no GEMM, no dispatch overhead
-- **Replaces O(d^2) dense rotation with O(d log d) structured rotation** -- 11x fewer FMAs
+- 120B model runs at **14.85 tok/s in 17.2 GB**
+- KV cache compressed to **3-bit (5x smaller)**
+- **No K/V reconstruction, no GEMM**
+- **Fused Metal kernels (4 kernels total)**
+- Quality parity with uncompressed KV (delta PPL +0.001)
 
-Result: **14.85 tok/s on a 120B-parameter model within 17.2 GB** on an M4 Max. Quality parity with uncompressed KV (delta PPL +0.001). Validated with 12/12 correctness and a 2-hour soak test.
+| Method | KV Path | Gen (t/s) | Memory |
+|--------|---------|-----------|--------|
+| FP16 KV | Dequant + GEMM | ~100 | OOM at 120B |
+| TurboQuant | Reconstruct + GEMM | 100.15 | High |
+| **IsoQuant (this work)** | **Fused (no recon)** | **96.98** | **17.2 GB** |
+
+---
+
+Modern LLM inference is not compute-bound -- it is **memory-bandwidth bound**. The dominant cost is not attention itself, but reconstructing KV tensors before compute begins.
+
+```
+Standard execution model:
+  compressed KV → dequantise → materialise FP16 tensors → GEMM → attention
+
+IsoQuant execution model (this work):
+  packed 3-bit KV → fused_qk_dot → softmax → fused_value_accum → inverse_rotate → output
+  (no tensors materialised, no GEMM, data stays packed)
+```
+
+This repo implements that alternative pipeline:
+
+- **Compute operates directly on compressed KV** -- no FP16 reconstruction
+- **K/V tensors are never materialised** -- data stays in packed form
+- **Attention executes in rotated space** -- inverse rotation applied once post-aggregation
+- **Fused kernels replace GEMM** -- computation moves to the data, not vice versa
+- **Structured rotation (WHT + SO(4))** reduces decode cost from O(d^2) to O(d log d)
+- **Mojo prototypes** explore this execution model beyond Metal
+
+Result: **14.85 tok/s on a 120B-parameter model within 17.2 GB** on an M4 Max. Validated with 12/12 correctness and a 2-hour soak test.
+
+### Core Claim
+
+This is not a quantisation improvement. It is a shift in execution model: from *reconstruct-then-compute* to *compute-in-compressed-space*.
 
 ---
 
@@ -34,7 +66,9 @@ This repo:
 | RotorQuant | Geometric algebra | No (claimed) | O(d log d) | ~256 |
 | **IsoQuant (this work)** | **WHT + SO(4)** | **No (fused Metal)** | **O(d log d)** | **256** |
 
-We sit between TurboQuant and RotorQuant: we already did the hard systems work (fusion, memory elimination) using structured rotations that work with existing models today.
+**TurboQuant** works today but pays O(d^2) decode cost and reconstructs tensors.
+**RotorQuant** has better asymptotics but lacks production-grade fused kernels.
+**IsoQuant** is the first systems-realised version: O(d log d) decode, fully fused Metal implementation, running on real models today.
 
 ---
 
@@ -61,7 +95,18 @@ Four kernels, zero K/V reconstruction:
 | **C: `fused_value_accum`** | Weighted value sum on 3-bit packed V | Dequant + matmul |
 | **D: `metal_rotate_inverse`** | WHT butterfly + SO(4) block inverse (1,408 FMAs) | Dense inverse (16,384 FMAs) |
 
-**Kernel C dominates runtime.** We introduce a dual-strategy kernel to handle different sequence-length regimes -- this is the key systems insight.
+These kernels are also prototyped in Mojo (`mojo-bench/`) to explore lower-level kernel optimisation and portability beyond Metal.
+
+### The Real Bottleneck
+
+> Kernel C (value accumulation) dominates runtime at **0.79 ms** -- more than Kernels A, B, and D combined.
+
+This is not obvious. Most implementations assume QK matmul is dominant. In practice, with compressed KV, **value accumulation becomes the bottleneck** because each value must be decoded from 3-bit packed format and accumulated in a single pass.
+
+We address this with a dual-strategy kernel:
+- **Word-parallel** for short sequences (T < 512)
+- **Dim-parallel** for long sequences (T >= 512)
+- **Runtime auto-selection** via heuristic
 
 ### Verified on Apple M4 Max (Metal)
 
@@ -87,7 +132,24 @@ This is not just quantisation:
 - **Rotation cannot be dense** -- replaced with WHT + SO(4) structured decomposition
 - **GPU occupancy varies by regime** -- requires dual Kernel C strategies (short vs long sequence)
 
+Even with emerging systems like Mojo, expressing these fused kernels requires careful control over memory layout, bit-packing, and warp-level execution -- this is not something standard matmul abstractions expose.
+
 Most implementations avoid this by reconstructing tensors and calling GEMM. We explicitly avoid that.
+
+---
+
+## Why This Isn't Standard
+
+Most systems do not fuse KV decode because:
+
+1. **Bit-packed decode is hard to vectorise** -- 3-bit boundaries don't align with SIMD lanes
+2. **Rotation breaks standard matmul assumptions** -- you can't call GEMM on rotated, packed data
+3. **GPU kernels become occupancy-sensitive** -- different T regimes need different parallelism strategies
+4. **Frameworks are built around GEMM abstractions** -- MLX, PyTorch, GGML all assume tensor materialisation
+
+As a result, every existing system reconstructs tensors and calls GEMM.
+
+IsoQuant instead moves compute into the decode path itself. The kernels decode, rotate, and accumulate in a single pass without ever materialising the full tensor.
 
 ---
 
@@ -136,6 +198,10 @@ All measurements on Apple M4 Max (128 GB, 40 GPU cores, macOS 15.4). Pinned arti
 
 This is a bandwidth optimisation, not a universal speedup. It matters most when KV cache is the wall.
 
+### Scaling Intuition
+
+KV bandwidth scales linearly with sequence length (T). IsoQuant reduces bytes-per-token by ~5x and decode compute from quadratic to sub-quadratic. **Gains increase with T** -- this is why it matters at 2K--32K context, not at 128.
+
 ---
 
 ## Quick Start
@@ -164,6 +230,13 @@ python scripts/benchmark_fused_attention.py \
   --json-out results.json
 ```
 
+Expected output (M4 Max, H=8 T=2048 D=128):
+```
+fused_gpu_ms ≈ 0.9 ms
+kernel_C    ≈ 0.8 ms  (dominant)
+max_error   < 4e-06
+```
+
 ---
 
 ## Repository Structure
@@ -180,12 +253,28 @@ python scripts/benchmark_fused_attention.py \
 
 ---
 
+## Mojo Kernel Benchmarks
+
+We include a parallel set of kernel implementations in Mojo (`mojo-bench/`) to study performance characteristics outside the MLX/Metal stack.
+
+**Scope:** matmul baselines, softmax, RoPE / rotation kernels
+
+**Purpose:**
+- Validate kernel behaviour independent of MLX
+- Explore portability to non-Metal backends
+- Test lower-level optimisation strategies (tiling, memory layout, fusion)
+
+Mojo is not used in the main inference path yet, but serves as a forward-looking kernel development environment.
+
+---
+
 ## Roadmap
 
 - [ ] llama.cpp full integration (`ggml-metal` backend, replace `ggml_compute_forward_flash_attn`)
 - [ ] Single command-buffer fusion (remove remaining dispatch overhead)
 - [ ] Kernel A+C fusion (eliminate intermediate score tensor)
 - [ ] Larger context benchmarks (T >= 8K, T >= 32K)
+- [ ] Mojo-native fused KV decode (portable backend beyond Metal)
 - [ ] CUDA / Vulkan backend
 - [ ] 1T-parameter validation on 128 GB hardware (Kimi-K2.5, 384 experts)
 
@@ -670,6 +759,18 @@ graph TD
 [21] Johnson, W. and Lindenstrauss, J. *Extensions of Lipschitz Mappings into a Hilbert Space.* 1984.
 
 For the complete reference list, see the [full paper](docs/FROM_ATTENTION_TO_CONSUMER_HARDWARE.md#12-references-and-attribution).
+
+---
+
+## If You Only Remember One Thing
+
+LLMs are not compute-bound. They are **memory-bandwidth bound**.
+
+Most systems: reconstruct KV, then run GEMM.
+
+IsoQuant: runs attention directly on compressed KV.
+
+That's the difference.
 
 ---
 

@@ -77,6 +77,9 @@ Today, we face a "Kitchen Crisis." We have recipes for a trillion-parameter feas
 
 ## 1. The Great Kitchen Crisis: Why Large Models Don't Fit
 
+![The Unified Memory Constraint](docs/images/01-unified-memory.png)
+*RAM is the counter space; the SSD is the back alley. A 1T-parameter model is 384 chefs trying to work in a space designed for eight.*
+
 In the realm of AI, the "Kitchen" represents our total system, and the "Service Area" is our RAM (Random Access Memory). A 1-Trillion (1T) parameter model is a logistical nightmare: it is equivalent to 384 specialized station chefs trying to work simultaneously in a space designed for a single toaster.
 
 The table below illustrates the mismatch between the "Ideal Kitchen Requirements" of a massive uncompressed model and the "Actual Counter Space" available on high-end consumer hardware, such as an Apple Silicon Mac with 128GB of Unified Memory.
@@ -107,6 +110,9 @@ To run a kitchen of this scale, you must understand the hierarchy of the staff:
 
 ### The Si Fu's Special Treatment (Kurtosis and Outliers)
 
+![The Shared Expert — Si Fu](docs/images/03-shared-expert.png)
+*The Si Fu touches every order. His weights stay at Q8_0 precision — full-text recipes, no shorthand.*
+
 Based on our architectural data, the Shared Expert (Si Fu) carries a heavy informational load. We measure this through excess kurtosis -- a statistical indicator of "outlier values." The Si Fu exhibits an excess kurtosis of 10.10 compared to just 0.41 for the specialists -- a massive 24.6x gap. Because the Si Fu's knowledge is so "peaky" and outlier-dense, aggressive compression would destroy the flavor. Therefore, the Si Fu receives "prime counter space": we pin their weights at Q8_0 precision, while the specialists are sent to the alley and compressed far more aggressively.
 
 ---
@@ -123,6 +129,9 @@ By using higher precision (Q8_0) for the high-kurtosis Shared Expert and aggress
 
 ## 4. Strategy II: Expert Offloading (The Back-Alley Rotation)
 
+![MoE Routing — The Back-Alley Call](docs/images/02-moe-routing.png)
+*The Floor Manager (Router) calls the top-K specialists from the alley. The rest keep playing mahjong.*
+
 In a standard Transformer kitchen, every chef must stay at their station, even if they aren't cooking. In an MoE kitchen, we utilize Sparsity. Out of 384 chefs, only 8 (Top-K) are active for any single token. The Floor Manager (Router) decides who is needed. The rest stay in the Back Alley (Disk).
 
 | Standard Transformer | MoE with Offloading |
@@ -135,6 +144,9 @@ We manage this via an LRU (Least Recently Used) Eviction policy. If the counter 
 ---
 
 ## 5. Strategy III: KV Cache Compression (The Siu Loong Bao Challenge)
+
+![KV Cache Compression — The Siu Loong Bao](docs/images/04-kv-compression.png)
+*Each dumpling is stamped P3 (3-bit packed). 128 dimensions into 48 bytes — 5x compression without tearing the skin.*
 
 The most demanding operation is managing the KV Cache, or "Prepped Fillings." As the conversation (sequence length) grows, the chef keeps more bowls of prepped ingredients on the counter. Eventually, the counter is covered in bowls, threatening to overflow. We solve this by packing these fillings like Siu Loong Bao (soup dumplings) through a 4-step pipeline:
 
@@ -151,6 +163,9 @@ Lloyd-Max quantisation is a dual-optimization. We don't use the same size basket
 
 ## 6. The Secret Sauce: IsoQuant and the Art of the "Two-Handed Mix"
 
+![IsoQuant Rotation — The Two-Handed Mix](docs/images/05-isoquant-rotation.png)
+*WHT global mix in the background vortex; SO(4) fine rotation distributes filling into groups of four.*
+
 The secret to thin wrappers is Approximate Isotropy. If the fillings are lumpy and uneven, the wrappers will tear. We use IsoQuant, which evolved through three iterations of engineering struggle:
 
 - **v1 (Single-handed mix):** Used a single-quaternion sandwich. It "collapsed," scoring 0/5 on our correctness tests because it left 25% of dimensions unmixed.
@@ -166,6 +181,9 @@ The secret to thin wrappers is Approximate Isotropy. If the fillings are lumpy a
 > *The Thinner Paper Rule:* By ensuring the filling is perfectly even (Isotropy), the pressure of quantization error is spread across all dimensions. This allows us to use much thinner wrappers (3-bit) without the dumplings falling apart.
 
 ### Cleaning the Trays (The Inverse Rotation)
+
+![Inverse Rotation — Scrubbing the Trays](docs/images/07-inverse-rotation.png)
+*Without scrubbing (inverse rotation), the coconut tarts taste of shrimp. Perplexity explodes from 7.05 to 15,369.*
 
 Crucially, IsoQuant requires an Inverse Rotation at the read step. Think of this as scrubbing the steamer trays clean. If you move from a savory shrimp filling to a sweet coconut tart without scrubbing (reversing the rotation), the flavors contaminate each other. Without this step, perplexity explodes from 7.05 to 15,369 -- the coconut tarts taste of shrimp, and the model collapses.
 
@@ -222,6 +240,9 @@ The entire system is designed around one principle: **preserve the ordering of a
 ---
 
 ## Standard Attention
+
+![Attention Scoring — Matching Orders to Labels](docs/images/06-attention-scoring.png)
+*The Head Chef holds a fresh order ticket and scans every labelled steamer basket — that's $QK^\top$ in a single glance.*
 
 Every transformer layer begins here. Given a sequence of token embeddings, we project into queries, keys, and values:
 

@@ -2,6 +2,10 @@
 
 **This repository implements a new execution model for attention: run attention directly on compressed KV cache -- no reconstruction, no GEMM, fully fused Metal kernels, with parallel Mojo kernel prototypes for portability.**
 
+**Podcast:** [Fitting a 120B Model on a MacBook — NotebookLM Breakdown](docs/Fitting_a_120B_model_on_a_MacBook.m4a) (download to listen)
+
+**Video:** [AI & the Yum Cha Kitchen](docs/AI_&_the_Yum_Cha_Kitchen.mp4) (download to watch)
+
 > **Naming guide.** This repo is called **RotaryQuant** (the project). The core method is **IsoQuant** -- a fused KV cache compression pipeline using WHT + SO(4) structured rotations. **TurboQuant** (Frantar et al., ICLR 2026) is the baseline we compare against; it uses dense random rotations and reconstructs K/V tensors before attention. When you see "IsoQuant" in this README, that is the method you would run. When you see "TurboQuant", that is what we replace.
 
 ![The Tiny Kitchen: Fitting 1 Trillion Parameters on Consumer Hardware](docs/images/kitchen-overview.png)
@@ -382,10 +386,6 @@ We include a parallel set of kernel implementations in Mojo (`mojo-bench/`) to s
 ---
 
 # The Yum Cha Guide to Trillion-Parameter AI: A Conceptual Primer
-
-**Podcast:** [Fitting a 120B Model on a MacBook — NotebookLM Breakdown](docs/Fitting_a_120B_model_on_a_MacBook.m4a) (download to listen)
-
-**Video:** [AI & the Yum Cha Kitchen](docs/AI_&_the_Yum_Cha_Kitchen.mp4) (download to watch)
 
 *Welcome to the kitchen of the future. As both a Distinguished Professor of Computer Architecture and a Michelin-starred Dim Sum Chef, I find that the most complex engineering challenges are best understood through the steam of a bamboo basket.*
 

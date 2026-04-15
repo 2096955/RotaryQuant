@@ -848,23 +848,110 @@ Honest inventory of what's proven vs what's still open. Items are ordered by imp
 
 ## References
 
-[1] Frantar et al. *TurboQuant: Accelerating Large Language Models with KV Cache Quantization.* arXiv:2504.19874 / ICLR 2026.
+[1] Zandieh, A., Daliri, M., Han, I., and co-authors.
+*TurboQuant: Online Vector Quantization with Near-Optimal Distortion Rate.*
+International Conference on Learning Representations (ICLR) 2026.
+arXiv: [2504.19874](https://arxiv.org/abs/2504.19874).
 
-[6] IsoQuant / RotorQuant lineage: arXiv:2603.28430 plus the upstream scrya-com implementation.
+[2] Zandieh, A., Daliri, M., Han, I.
+*QJL: 1-Bit Quantized JL Transform for KV Cache Quantization with Zero Overhead.*
+AAAI Conference on Artificial Intelligence (AAAI) 2025.
+arXiv: [2406.03482](https://arxiv.org/abs/2406.03482).
 
-[9] Eliseev and Mazur. *Fast Inference of Mixture-of-Experts Language Models with Offloading.* 2023.
+[3] Liu, Z., Yuan, J., and co-authors.
+*KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache.*
+International Conference on Machine Learning (ICML) 2024.
+arXiv: [2402.02750](https://arxiv.org/abs/2402.02750).
+Code: https://github.com/jy-yuan/KIVI.
 
-[14] Moonshot AI / Kimi Team. *AttnRes* block-attention residual work, arXiv:2603.15031.
+[4] Zhang, H., Liu, J., and co-authors.
+*KVQuant: Towards 10 Million Context Length LLM Inference with KV Cache Quantization.*
+Conference on Neural Information Processing Systems (NeurIPS) 2024.
+arXiv: [2401.18079](https://arxiv.org/abs/2401.18079).
 
-[15] [MLX](https://github.com/ml-explore/mlx). Apple Silicon array framework.
+[5] Kang, H., Li, Y., and co-authors.
+*GEAR: An Efficient KV Cache Compression Recipe for Near-Lossless LLM Inference.*
+arXiv preprint, 2024.
+arXiv: [2403.05527](https://arxiv.org/abs/2403.05527).
 
-[16] [mlx-lm](https://github.com/ml-explore/mlx-examples/tree/main/llms/mlx_lm). Upstream LLM stack.
+[6] RotorQuant / IsoQuant authors.
+*RotorQuant / IsoQuant: Rotated Quantization Methods for KV Cache Compression.*
+arXiv: [2603.28430](https://arxiv.org/abs/2603.28430).
+(Include the final canonical title, full author list, and upstream implementation URL once finalized.)
 
-[17] [llama.cpp](https://github.com/ggml-org/llama.cpp). GGML / Metal inference framework.
+[7] Ashkboos, C., Mohtashami, S., and co-authors.
+*QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs.*
+Conference on Neural Information Processing Systems (NeurIPS) 2024.
+arXiv: [2404.00456](https://arxiv.org/abs/2404.00456).
 
-[20] Lloyd, S. *Least Squares Quantization in PCM.* IEEE TIT, 1982.
+[8] Chmiel, B., Gale, T., and co-authors.
+*QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks.*
+International Conference on Machine Learning (ICML) 2024.
+arXiv: [2402.04396](https://arxiv.org/abs/2402.04396).
 
-[21] Johnson, W. and Lindenstrauss, J. *Extensions of Lipschitz Mappings into a Hilbert Space.* 1984.
+[9] Eliseev, D., Mazur, M.
+*Fast Inference of Mixture-of-Experts Language Models with Offloading.*
+arXiv preprint, 2023.
+arXiv: [2312.17238](https://arxiv.org/abs/2312.17238).
+
+[10] mudler and contributors.
+*APEX-Quant: Layer-Aware Expert Quantization for Mixture-of-Experts Models.*
+GitHub repository, 2024.
+Code: https://github.com/mudler/apex-quant.
+
+[11] Zhang, Z., Yang, Y., and co-authors.
+*MxMoE: Mixed-Precision Quantization for MoE with Accuracy and Efficiency.*
+International Conference on Machine Learning (ICML) 2025.
+arXiv: [2505.05799](https://arxiv.org/abs/2505.05799).
+
+[12] Chitty-Venkata, A., Patel, V., and co-authors.
+*MoPEQ: Mixture of Mixed Precision Quantized Experts.*
+ICCV 2025, BiVision Workshop.
+arXiv: [2509.02512](https://arxiv.org/abs/2509.02512).
+
+[13] Chen, Y., Narayanan, P., and co-authors.
+*Dynamic Expert Quantization for Scalable Mixture-of-Experts Inference (DynaExQ).*
+arXiv preprint, 2025.
+arXiv: [2511.15015](https://arxiv.org/abs/2511.15015).
+
+[14] Moonshot AI / Kimi Team.
+*AttnRes: Block-Attention Residual for Cross-Layer Attention Signals.*
+arXiv preprint, 2026.
+arXiv: [2603.15031](https://arxiv.org/abs/2603.15031).
+
+[15] MLX Team.
+*MLX: Numerical Computing Framework for Apple Silicon.*
+GitHub repository.
+https://github.com/ml-explore/mlx.
+
+[16] MLX Team.
+*mlx-lm: Large Language Model Utilities for MLX.*
+GitHub repository.
+https://github.com/ml-explore/mlx-examples/tree/main/llms/mlx_lm.
+
+[17] Gerganov, G., and contributors.
+*llama.cpp: Inference of LLaMA Models in C/C++.*
+GitHub repository.
+https://github.com/ggml-org/llama.cpp.
+
+[18] TurboQuantNemo Authors.
+*TurboQuantNemo: MLX / Nemotron Integration with TurboQuant-Style KV Cache Compression.*
+GitHub repository.
+https://github.com/2096955/TurboQuantNemo.
+
+[19] tonbistudio.
+*turboquant-pytorch: PyTorch Reference Implementation of TurboQuant.*
+GitHub repository.
+https://github.com/tonbistudio/turboquant-pytorch.
+
+[20] Lloyd, S.
+*Least Squares Quantization in PCM.*
+IEEE Transactions on Information Theory, 28(2):129–137, 1982.
+https://ieeexplore.ieee.org/document/1056489.
+
+[21] Johnson, W. B., Lindenstrauss, J.
+*Extensions of Lipschitz Mappings into a Hilbert Space.*
+Contemporary Mathematics, 26:189–206, 1984.
 
 For the complete reference list, see the [full paper](docs/FROM_ATTENTION_TO_CONSUMER_HARDWARE.md#12-references-and-attribution).
 

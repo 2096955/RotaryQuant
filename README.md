@@ -22,7 +22,7 @@
 
 ---
 
-Modern LLM inference is not compute-bound -- it is **memory-bandwidth bound**. The dominant cost is not attention itself, but reconstructing KV tensors before compute begins.
+Modern LLM inference during autoregressive decode is **memory-bandwidth bound**, not compute-bound. (Prefill and large-batch inference are compute-bound -- this work targets the single-user decode regime.) The dominant cost is not attention arithmetic itself, but reconstructing KV tensors before compute begins.
 
 ```
 Standard execution model:
@@ -178,7 +178,51 @@ AttnRes is a cross-layer attention residual signal that predicts which experts w
 
 **Root cause (suspected):** CPU/GPU command buffer contention -- the predictor signal computation competes with Metal kernel dispatch on the same command queue. Potential fixes include async offload to a CPU thread or deferred batch prediction, but neither has been validated.
 
-**Current decision: No-go.** AttnRes remains in the codebase as an optional flag but is not part of the default stack. It will be revisited if command buffer contention can be resolved without throughput cost.
+**Current decision: No-go.** AttnRes remains in the codebase as an optional flag but is not part of the default stack.
+
+**Path forward (two options, neither validated):**
+1. **Async CPU offload** -- move predictor computation to a CPU thread pool, decouple from Metal command buffer. Risk: cross-device synchronisation overhead may negate the benefit.
+2. **Retire AttnRes entirely** -- remove from the stack narrative, keep code as dead-path reference. This is the cleanest option if no one picks up the async offload work.
+
+The decision is deferred until someone profiles the CPU/GPU contention boundary. If you have Metal profiling expertise, this is a high-value contribution.
+
+### Deferred Prefill (Implemented)
+
+During prefill (prompt processing), KV is stored in FP16 uncompressed. Compression happens **once** at the prefill-to-decode boundary, not per-token. This eliminates compounding quantisation error during the prompt phase.
+
+```
+Prefill phase (seq_len > 1):
+  KV → accumulate in FP16 buffer → pass through uncompressed
+
+Transition (first decode token):
+  FP16 buffer → bulk compress via IsoQuant → 3-bit packed cache
+
+Decode phase (seq_len = 1):
+  new KV → incremental compress → append to packed cache
+```
+
+Implementation: `IsoQuantKVCache.finalize_deferred_prefill()` in `mlx-lm/mlx_lm/models/mlx_isoquant.py`. The FP16 buffer costs ~512 MB for 8K context — manageable on target hardware.
+
+### DedeKimi Observer (Implemented)
+
+Expert activation monitoring with entropy-based collapse detection. Tracks per-layer EMA of expert usage, reports Shannon entropy and collapse risk.
+
+Implementation: `DedeKimiObserver` in `mlx-lm/mlx_lm/expert_offload.py`. Wired into `ExpertOffloadManager` for runtime monitoring. Tests in `tests/test_dedekimi_observer.py`.
+
+Key methods: `record_activation()`, `get_layer_entropy()`, `expert_collapse_risk()`, `health_summary()`.
+
+### End-to-End Profiling Gate (Open)
+
+> **Gate:** If KV attention is < 20% of total decode time for a given model, IsoQuant's impact is negligible for that architecture.
+
+This is an empirical question per model family. Current decode profiling shows:
+
+| Architecture | KV attention share | IsoQuant impact |
+|---|---|---|
+| Standard MoE (Gemma4, Qwen3) | **51-54%** | High -- KV is the dominant cost |
+| Hybrid Mamba+MoE (Nemotron-H) | **14%** | Low -- expert routing dominates |
+
+**For any new model pathway, profile decode time breakdown first.** If KV attention is < 20%, IsoQuant is not the bottleneck and effort is better spent elsewhere. This gate should be the first step before attempting IsoQuant integration on a new architecture.
 
 ---
 
@@ -860,16 +904,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines and [CHANGELOG.md](CH
 
 These require hardware time and are the highest-impact contributions:
 
-- [ ] **Long-context benchmarks** -- run and publish results at 8K, 16K, 32K tokens (all current results are <= 2K)
-- [ ] **24-hour soak test** -- automate `vm_stat` + RSS monitoring, publish results
+- [ ] **PPL validation across context lengths** -- run PPL curves at 512, 2K, 4K, 8K tokens compared against FP16 baseline. All current results are <= 2K. This is the single most important credibility gap.
+- [ ] **24-hour soak test** -- extend `scripts/run_stability_soak.py` to 24h with `vm_stat` + RSS monitoring, enforce P99 < 3x P50, RSS non-growth, 110 GB ceiling. Current 2h soak is insufficient.
+- [ ] **Long-context benchmarks** -- run and publish IsoQuant decode performance at 8K, 16K, 32K tokens
 - [ ] **MoE ablation benchmarks** -- baseline TurboQuantNemo vs fused IsoQuant vs hybrid (fused KV + MoE offloading)
-- [ ] **Numerical invariance test harness** -- Phase 0 empirical tests (isometry checks, cosine similarity, top-k preservation) on real MLA content latents
+- [ ] **Numerical invariance on MLA content latents** -- extend `scripts/validate_numerical_invariance.py` to test on real Kimi-K2.5 content sub-space (448-dim) latents, not just synthetic data
+- [ ] **End-to-end profiling gate** -- run decode profiling on candidate architectures before IsoQuant integration (gate: KV attention must be >= 20% of decode time)
 
 ---
 
 ## If You Only Remember One Thing
 
-LLMs are not compute-bound. They are **memory-bandwidth bound**.
+LLM decode is not compute-bound. It is **memory-bandwidth bound**.
 
 Most systems: reconstruct KV, then run GEMM.
 

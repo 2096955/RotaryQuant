@@ -2,6 +2,8 @@
 
 **This repository implements a new execution model for attention: run attention directly on compressed KV cache -- no reconstruction, no GEMM, fully fused Metal kernels, with parallel Mojo kernel prototypes for portability.**
 
+> **Naming guide.** This repo is called **RotaryQuant** (the project). The core method is **IsoQuant** -- a fused KV cache compression pipeline using WHT + SO(4) structured rotations. **TurboQuant** (Frantar et al., ICLR 2026) is the baseline we compare against; it uses dense random rotations and reconstructs K/V tensors before attention. When you see "IsoQuant" in this README, that is the method you would run. When you see "TurboQuant", that is what we replace.
+
 ![The Tiny Kitchen: Fitting 1 Trillion Parameters on Consumer Hardware](docs/images/kitchen-overview.png)
 
 ## TL;DR (Apple M4 Max)
@@ -153,6 +155,33 @@ IsoQuant instead moves compute into the decode path itself. The kernels decode, 
 
 ---
 
+## Architectural Constraints
+
+### MLA / DKV Sub-Block Split (Hard Blocker for Kimi Path)
+
+Models using Multi-Head Latent Attention (MLA), such as Kimi-K2.5, compress the KV representation architecturally. The MLA latent vector splits into two sub-spaces:
+
+- **Content sub-space** (448 dims) -- learned semantic compression. IsoQuant may rotate and quantise this.
+- **RoPE positional sub-space** (64 dims) -- positional phase encoding. **IsoQuant must never rotate or quantise this.**
+
+Rotating RoPE dimensions smears positional phase into content coordinates, destroying long-context awareness. This is a non-negotiable architectural rule. The current implementation does not yet enforce this split -- it is a **hard blocker** for the Kimi-K2.5 pathway.
+
+Additionally, if MLA already compresses KV sufficiently, IsoQuant becomes unnecessary. Decision gate: if additional compression < 10% over MLA alone or PPL increase > 0.5, skip IsoQuant entirely.
+
+### AttnRes Predictor (Disabled -- Throughput Regression)
+
+AttnRes is a cross-layer attention residual signal that predicts which experts will be needed next, enabling async prefetch. It is implemented (`--use-predictor`) but **disabled by default** due to a measured throughput regression:
+
+- Gemma 4: **-11.2%** throughput
+- Qwen3: **-10.6%** throughput
+- Hit-rate improvement: **0%** (no benefit over baseline LRU)
+
+**Root cause (suspected):** CPU/GPU command buffer contention -- the predictor signal computation competes with Metal kernel dispatch on the same command queue. Potential fixes include async offload to a CPU thread or deferred batch prediction, but neither has been validated.
+
+**Current decision: No-go.** AttnRes remains in the codebase as an optional flag but is not part of the default stack. It will be revisited if command buffer contention can be resolved without throughput cost.
+
+---
+
 ## Results
 
 | Model | tok/s | Peak Memory | Budget | Quality | 2h Soak |
@@ -208,10 +237,32 @@ KV bandwidth scales linearly with sequence length (T). IsoQuant reduces bytes-pe
 
 ```bash
 git clone https://github.com/2096955/RotaryQuant.git
-cd RotaryQuant && pip install -e .          # isoquant CLI wrapper
-cd mlx-lm && pip install -e .               # MLX inference engine
+cd RotaryQuant
+bash scripts/bootstrap.sh                   # installs everything in one step
 python -m mlx_lm.server --model <model> --kv-cache-type isoquant --port 8000
 ```
+
+Or manually:
+
+```bash
+pip install -e .                             # isoquant CLI wrapper
+cd mlx-lm && pip install -e ".[test]" && cd ..  # MLX inference engine + test deps
+```
+
+### 5-Minute Smoke Test
+
+**Requirements:** Apple Silicon Mac, Python 3.10+, ~2 GB free memory.
+
+```bash
+# Download a small model and run IsoQuant decode
+python -m mlx_lm.generate \
+  --model mlx-community/Qwen2.5-1.5B-Instruct-4bit \
+  --prompt "Explain KV cache compression in one sentence." \
+  --kv-cache-type isoquant \
+  --max-tokens 50
+```
+
+**Expected:** coherent text output, no errors, ~20-40 tok/s on M-series chips. If this works, IsoQuant is correctly installed and running fused Metal kernels.
 
 ### Use with Claude Code
 
@@ -253,7 +304,9 @@ max_error   < 4e-06
 
 ---
 
-## Mojo Kernel Benchmarks
+## Mojo Kernel Benchmarks (Research Artifact)
+
+> **Status: research prototype only.** Mojo kernels are not used in the production inference path. They exist to study kernel behaviour and portability outside MLX/Metal. Do not depend on them for inference.
 
 We include a parallel set of kernel implementations in Mojo (`mojo-bench/`) to study performance characteristics outside the MLX/Metal stack.
 
@@ -263,8 +316,6 @@ We include a parallel set of kernel implementations in Mojo (`mojo-bench/`) to s
 - Validate kernel behaviour independent of MLX
 - Explore portability to non-Metal backends
 - Test lower-level optimisation strategies (tiling, memory layout, fusion)
-
-Mojo is not used in the main inference path yet, but serves as a forward-looking kernel development environment.
 
 ---
 
@@ -731,7 +782,7 @@ graph TD
 | $c_i$ | Lloyd-Max centroids | **Steamer basket sizes** |
 | $b_i$ | Decision boundaries | **Sorting rule** for portioning dumplings |
 | $H_d$ | WHT rotation | **Global Mix** (rough stir in a massive bowl) |
-| $\mathfrak{q}_{L}, \mathfrak{q}_{R}$ | SO(4) rotation | **Two-Handed Fine Mix** (perfecting batches of 4) |
+| q_L, q_R | SO(4) quaternion rotation | **Two-Handed Fine Mix** (perfecting batches of 4) |
 | $\Pi$ | Isometric rotation | **Portioning** (evening out the filling) |
 | $\sigma_q^2$ | Quantisation error | **Crush factor** (lost filling due to thin paper) |
 | $\alpha_{n \to l}$ | AttnRes block weights | **Mid-prep taste test** |
@@ -759,6 +810,60 @@ graph TD
 [21] Johnson, W. and Lindenstrauss, J. *Extensions of Lipschitz Mappings into a Hilbert Space.* 1984.
 
 For the complete reference list, see the [full paper](docs/FROM_ATTENTION_TO_CONSUMER_HARDWARE.md#12-references-and-attribution).
+
+---
+
+## Deployment & Stability
+
+This is a research checkpoint, not a production release. Key risk gates for production readiness:
+
+| Gate | Current Status | Target |
+|------|---------------|--------|
+| Memory ceiling | 17.2 GB peak (120B) | Must not exceed hardware budget under any input |
+| P99 latency | P99/P50 ratio 1.14 (120B) | < 2.0x for interactive use |
+| RSS non-growth | 0.994x over 2h soak | Must not grow over 24h (not yet tested) |
+| Long-context fidelity | Validated at 2K tokens | Must validate at 8K, 16K, 32K |
+| MLA/DKV split | Not implemented | Hard blocker for Kimi-K2.5 path |
+| MLX lazy eval fencing | Undocumented | `mx.eval()` fencing strategy needed for sustained load |
+
+**Known risks:** MLX lazy evaluation and buffer pooling interact with fused Metal kernels in ways that are currently undocumented. Silent OOM or memory fragmentation under sustained load is possible. The 2-hour soak test passed, but a 24-hour soak has not been run.
+
+---
+
+## Running Tests & Contributing
+
+```bash
+# Run the full test suite
+cd mlx-lm && pytest tests/ -v
+
+# Run the quality gate (12-prompt correctness harness)
+python scripts/eval_quality_gate.py --model <model> --kv-cache-type isoquant
+
+# Run kernel precision validation
+python scripts/validate_kernel_precision.py
+
+# Run a 2-hour soak test
+python scripts/run_2h_soak.py --model <model>
+```
+
+**What a PR must include:**
+- Quality gate pass (12/12) for any affected model pathway
+- Kernel precision validation pass (max error < 1e-05)
+- No RSS growth over baseline in a soak test
+- Pinned result JSON in `results/` for any new benchmark claims
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for full guidelines and [CHANGELOG.md](CHANGELOG.md) for version history.
+
+---
+
+## Benchmarking Gaps (Help Wanted)
+
+These require hardware time and are the highest-impact contributions:
+
+- [ ] **Long-context benchmarks** -- run and publish results at 8K, 16K, 32K tokens (all current results are <= 2K)
+- [ ] **24-hour soak test** -- automate `vm_stat` + RSS monitoring, publish results
+- [ ] **MoE ablation benchmarks** -- baseline TurboQuantNemo vs fused IsoQuant vs hybrid (fused KV + MoE offloading)
+- [ ] **Numerical invariance test harness** -- Phase 0 empirical tests (isometry checks, cosine similarity, top-k preservation) on real MLA content latents
 
 ---
 

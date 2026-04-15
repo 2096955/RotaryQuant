@@ -573,7 +573,7 @@ IsoQuant consistently preserves attention scores across all three architectures,
 | **Gemma 4-26B-A4B** | default | 3.2029 | 1.3483 | — |
 | | turboquant | 3.5180 | 1.4105 | +0.0622 |
 | | isoquant | 3.2029 | 1.3483 | **+0.0000**\* |
-| **Nemotron-30B** | default | 1.3911 | 1.0866 | — |
+| **Nemotron-H 120B** | default | 1.3911 | 1.0866 | — |
 | | turboquant | 1.4086 | 1.0905 | +0.0039 |
 | | isoquant | 1.3961 | 1.0878 | **+0.0012** |
 
@@ -595,7 +595,7 @@ The decreasing delta with longer context is consistent with the compressed-sensi
 
 Per-component decode time attribution via `mx.eval()` timing fences (warm run, 64 decode tokens):
 
-| Component | Gemma4 (ms/tok) | Qwen3 (ms/tok) | Nemotron (ms/tok) |
+| Component | Gemma4 (ms/tok) | Qwen3 (ms/tok) | Nemotron-H 120B (ms/tok) |
 |---|---|---|---|
 | kv_attention | 65.3 `█████░░░░░` (51%) | 58.1 `█████░░░░░` (54%) | 6.6 `█░░░░░░░░░` (14%) |
 | routed_expert | 47.5 `████░░░░░░` (37%) | 48.3 `█████░░░░░` (45%) | 28.7 `██████░░░░` (60%) |

@@ -761,6 +761,7 @@ IsoQuant is integrated as `GGML_TYPE_ISOQUANT3_0` with dedicated Metal shaders. 
 | routed_expert | 47.5 `████░░░░░░` (37%) | 48.3 `█████░░░░░` (45%) | 28.7 `██████░░░░` (60%) |
 | dense_ffn | 11.5 `█░░░░░░░░░` (9%) | 0.0 `░░░░░░░░░░` (0%) | 0.0 `░░░░░░░░░░` (0%) |
 | other (Mamba/SSM) | 0.0 `░░░░░░░░░░` (0%) | 0.0 `░░░░░░░░░░` (0%) | 11.3 `██░░░░░░░░` (24%) |
+| uninstrumented | 3.9 `░░░░░░░░░░` (3%) | 1.3 `░░░░░░░░░░` (1%) | 1.5 `░░░░░░░░░░` (3%) |
 
 KV attention is **51-54% of decode time** on standard MoE architectures (Gemma4, Qwen3), confirming it as the single largest cost center and justifying KV compression work. On hybrid Mamba+MoE (Nemotron-H), attention drops to 14% and expert routing dominates at 60%.
 
@@ -796,6 +797,7 @@ graph TD
 | Qwen3 pathway | **Blocked** | Quality issues (8/12) |
 | AttnRes predictor | **No-go** | 10.6-11.2% throughput regression with no hit-rate improvement |
 | Task-aware pinning | **No-go** | 0% hit-rate improvement over baseline LRU |
+| QES | **Planned** | Background evolution strategies for gate-weight optimisation |
 
 ### Open Engineering Gaps
 

@@ -239,7 +239,7 @@ This is an empirical question per model family. Current decode profiling shows:
 |-------|--------------------|----------------------|
 | Qwen3-30B-A3B | **+0.0009** | +0.0405 |
 | Gemma 4-26B | **+0.0000** | +0.0622 |
-| Nemotron-30B | **+0.0012** | +0.0039 |
+| Nemotron-H 120B | **+0.0012** | +0.0039 |
 
 IsoQuant achieves quality parity with uncompressed KV. TurboQuant does not.
 
@@ -749,13 +749,13 @@ IsoQuant is integrated as `GGML_TYPE_ISOQUANT3_0` with dedicated Metal shaders. 
 | **Gemma 4-26B-A4B** | default | 3.2029 | 1.3483 | -- |
 | | turboquant | 3.5180 | 1.4105 | +0.0622 |
 | | isoquant | 3.2029 | 1.3483 | **+0.0000** |
-| **Nemotron-30B** | default | 1.3911 | 1.0866 | -- |
+| **Nemotron-H 120B** | default | 1.3911 | 1.0866 | -- |
 | | turboquant | 1.4086 | 1.0905 | +0.0039 |
 | | isoquant | 1.3961 | 1.0878 | **+0.0012** |
 
 ### Decode Profiling
 
-| Component | Gemma4 (ms/tok) | Qwen3 (ms/tok) | Nemotron (ms/tok) |
+| Component | Gemma4 (ms/tok) | Qwen3 (ms/tok) | Nemotron-H 120B (ms/tok) |
 |---|---|---|---|
 | kv_attention | 65.3 `█████░░░░░` (51%) | 58.1 `█████░░░░░` (54%) | 6.6 `█░░░░░░░░░` (14%) |
 | routed_expert | 47.5 `████░░░░░░` (37%) | 48.3 `█████░░░░░` (45%) | 28.7 `██████░░░░` (60%) |
@@ -796,6 +796,19 @@ graph TD
 | Qwen3 pathway | **Blocked** | Quality issues (8/12) |
 | AttnRes predictor | **No-go** | 10.6-11.2% throughput regression with no hit-rate improvement |
 | Task-aware pinning | **No-go** | 0% hit-rate improvement over baseline LRU |
+
+### Open Engineering Gaps
+
+Honest inventory of what's proven vs what's still open. Items are ordered by impact.
+
+| Gap | Status | Detail |
+|-----|--------|--------|
+| **Qwen3 pathway** | Blocked (8/12 quality) | IsoQuant KV + expert offload wiring is complete and runs end-to-end (9.87 tok/s, 9.5 GB peak). Quality gate fails 4 of 12 prompts. No 2-hour soak artifact. Must pass before claiming Qwen3 support. |
+| **Gemma4 IsoQuant cache** | Documented, not wired | `gemma4_text.py:make_cache()` is hardcoded to `KVCache`/`RotatingKVCache` with no `kv_cache_type` parameter. Gemma3 has the wiring (`rotorquant` path for global-attention layers); Gemma4 does not. Sliding-window layers correctly use `RotatingKVCache` (compressing short-lived KV wastes compute). |
+| **Shared expert offload policy** | Implicit, not explicit | `qwen3_next.py` shared experts are always-resident (sigmoid-gated, added to routed output). `expert_offload.py` has no key patterns, attachment logic, or LRU management for shared experts. Current behaviour is correct (shared experts should stay resident) but undocumented and untested under memory pressure. |
+| **Head dimension coverage** | Partial | SO(4) blocks require `head_dim % 4 == 0` (enforced). WHT requires power-of-2 (graceful fallback to block-only rotation). Fused Metal kernel is hardcoded to `head_dim=128` (fallback to 3-kernel pipeline for others). Tested: 12, 128, 256. Not tested: 64, 96, 192. Numerical invariance harness is 128-only. |
+| **QES (Quality Evolution Strategy)** | Designed, not implemented | Documented in BUILD_PHASES.md (Phase 7c) and the paper (Section 10.1.6) as "Planned." Zero code exists -- no reward functions, no perturbation loop, no simulation scripts. Blocked on Phase 5a gates + stable DedeKimi logs. |
+| **Prefix caching** | Working, upstream PRs not tracked | Prefix cache trimming and LRU prompt cache are implemented in `mlx_turboquant.py` and `server.py`. A Qwen3 KV reconstruction bug (passing latest chunk instead of full reconstructed KV) was found and fixed. Upstream mlx-lm PRs #923/#980 are not referenced or tracked in this repo. |
 
 ---
 

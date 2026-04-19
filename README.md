@@ -238,6 +238,13 @@ This is an empirical question per model family. Current decode profiling shows:
 |-------|-------|-------------|--------|---------|---------|
 | **Gemma 4-26B** | 12.85 | 5.4 GB | 16 GB | 12/12 | RSS 1.18x |
 | **Nemotron-H 120B** | 14.85 | 17.2 GB | 32 GB | 12/12 | RSS 0.994x |
+| **Qwen3.6-35B-A3B (mixed-precision)** | 15.6 | 6.8 GB cold / 12.0 GB warm | 16 GB | 12/12 | not yet run |
+
+### Qwen3.6 mixed-precision pathway (April 2026)
+
+The most recent pathway proof extends the three-axis stack to a new model family with a selective-precision recipe: 4-bit dense layers, 8-bit shared-expert and router-gate weights (the routing-fidelity anchor), 2-bit routed-expert weights, and IsoQuant 3-bit KV on the 10 of 40 full-attention layers (the remaining 30 are DeltaNet and use ArraysCache for their conv+SSM state). Compared to Q8_0 (37 GB resident, 11/12 quality) and uniform 4-bit MLX (19.6 GB resident, 11/12 quality, 117.8 tok/s), the mixed-precision configuration is the only one that fits the 16 GB target and is the only one that scores 12/12. The throughput cost (15.6 tok/s vs 117.8) is paid by expert offloading, not by the mixed-precision recipe itself.
+
+Caveats: single-run quality, 2-hour soak not yet performed, KV fidelity not separately measured for this checkpoint. Full reproducibility detail (exact commands, commit hashes, artifact paths) in [docs/QWEN36_MIXED_PRECISION_RESULTS.md](docs/QWEN36_MIXED_PRECISION_RESULTS.md).
 
 ### KV Fidelity -- IsoQuant vs TurboQuant vs Baseline
 

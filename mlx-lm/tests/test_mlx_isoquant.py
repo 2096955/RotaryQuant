@@ -405,5 +405,112 @@ class IsoQuantRotationTest(unittest.TestCase):
         np.testing.assert_allclose(np.array(out), np.full((1, 1, 4), 3.0))
 
 
+class TestUnfusedPathWarning(unittest.TestCase):
+    def test_bit_width_4_warns_unfused(self):
+        import warnings
+
+        cache = IsoQuantKVCache(
+            num_heads=2,
+            head_dim=128,
+            bit_width=4,
+            codebook_dir=None,
+        )
+        self.assertFalse(cache.supports_fused_attention)
+
+        keys = mx.random.normal((1, 2, 4, 128))
+        values = mx.random.normal((1, 2, 4, 128))
+        cache.update_and_fetch(keys, values)
+        cache.finalize_deferred_prefill()
+
+        q = mx.random.normal((1, 2, 1, 128))
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cache.fused_attention(q, scale=1.0 / (128**0.5))
+            unfused_warnings = [
+                x for x in w if "fused path unavailable" in str(x.message).lower()
+            ]
+            self.assertGreater(
+                len(unfused_warnings),
+                0,
+                "Expected a warning about fused path being unavailable for bit_width=4",
+            )
+
+    def test_bit_width_3_no_warning(self):
+        import warnings
+
+        cache = IsoQuantKVCache(
+            num_heads=2,
+            head_dim=128,
+            bit_width=3,
+            codebook_dir=None,
+        )
+        keys = mx.random.normal((1, 2, 4, 128))
+        values = mx.random.normal((1, 2, 4, 128))
+        cache.update_and_fetch(keys, values)
+        cache.finalize_deferred_prefill()
+
+        q = mx.random.normal((1, 2, 1, 128))
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            cache.fused_attention(q, scale=1.0 / (128**0.5))
+            unfused_warnings = [
+                x for x in w if "fused path unavailable" in str(x.message).lower()
+            ]
+            self.assertEqual(
+                len(unfused_warnings),
+                0,
+                "bit_width=3 should not emit unfused warning",
+            )
+
+    def test_unfused_counter_increments(self):
+        from mlx_lm.models.mlx_isoquant import reset_stats, get_stats
+
+        reset_stats()
+        cache = IsoQuantKVCache(
+            num_heads=2,
+            head_dim=128,
+            bit_width=4,
+            codebook_dir=None,
+        )
+        keys = mx.random.normal((1, 2, 4, 128))
+        values = mx.random.normal((1, 2, 4, 128))
+        cache.update_and_fetch(keys, values)
+        cache.finalize_deferred_prefill()
+
+        q = mx.random.normal((1, 2, 1, 128))
+        import warnings
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            cache.fused_attention(q, scale=1.0 / (128**0.5))
+
+        self.assertGreater(get_stats().unfused_fallback_calls, 0)
+
+
+class TestIsoquantBitsEnvVar(unittest.TestCase):
+    def test_isoquant_bits_overrides_turboquant_bits(self):
+        with patch.dict(os.environ, {"TURBOQUANT_BITS": "4", "ISOQUANT_BITS": "3"}):
+            from mlx_lm.models.cache import _get_isoquant_bits
+
+            self.assertEqual(_get_isoquant_bits(), 3)
+
+    def test_turboquant_bits_fallback_when_isoquant_bits_unset(self):
+        env = {"TURBOQUANT_BITS": "2"}
+        with patch.dict(os.environ, env, clear=False):
+            os.environ.pop("ISOQUANT_BITS", None)
+            from mlx_lm.models.cache import _get_isoquant_bits
+
+            self.assertEqual(_get_isoquant_bits(), 2)
+
+    def test_default_is_3_when_neither_set(self):
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("ISOQUANT_BITS", None)
+            os.environ.pop("TURBOQUANT_BITS", None)
+            from mlx_lm.models.cache import _get_isoquant_bits, _get_turboquant_bits
+
+            self.assertEqual(_get_turboquant_bits(), 3)
+            self.assertEqual(_get_isoquant_bits(), 3)
+
+
 if __name__ == "__main__":
     unittest.main()

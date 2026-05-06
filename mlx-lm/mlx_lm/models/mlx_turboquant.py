@@ -714,28 +714,38 @@ class TurboQuantKVCache:
 
     @property
     def state(self) -> dict[str, Any]:
-        """For serialization / checkpointing prefix cache."""
+        """For serialization / checkpointing prefix cache.
+
+        seq_len/bit_width wrapped as mx.array because mx.save_safetensors
+        rejects plain Python ints (std::bad_cast).
+        """
         return {
-            "seq_len": self._seq_len,
+            "seq_len": mx.array(self._seq_len, dtype=mx.int32),
             "compressed_keys": self.compressed_keys,
             "compressed_values": self.compressed_values,
-            "bit_width": self.bit_width,
+            "bit_width": mx.array(self.bit_width, dtype=mx.int32),
         }
 
     @state.setter
     def state(self, v):
-        self._seq_len = v["seq_len"]
-        self.offset = v["seq_len"]
+        seq_len_v = v["seq_len"]
+        if isinstance(seq_len_v, mx.array):
+            seq_len_v = int(seq_len_v.item())
+        self._seq_len = seq_len_v
+        self.offset = seq_len_v
         self.compressed_keys = v["compressed_keys"]
         self.compressed_values = v.get("compressed_values", {})
         self.uncompressed_values = v.get("uncompressed_values")
         self._dtype = mx.float16
-        self._fallback_cache = None
-        self._warned_fallback = False
 
     @classmethod
     def from_state(cls, state: dict, meta_state=None, **kwargs):
         # Reconstruct from state (for prefix cache loading)
+        if meta_state is None:
+            raise ValueError(
+                "meta_state is required for from_state reconstruction. "
+                "Cannot restore cache without version, bit_width, num_heads, head_dim."
+            )
         obj = cls.__new__(cls)
         obj.state = state
         obj.meta_state = meta_state
@@ -760,6 +770,11 @@ class TurboQuantKVCache:
 
     @meta_state.setter
     def meta_state(self, v):
+        if v is None:
+            raise ValueError(
+                "meta_state is required for from_state reconstruction. "
+                "Cannot restore cache without version, bit_width, num_heads, head_dim."
+            )
         version = v[0]
         if version not in {"v1", "v2"}:
             raise ValueError(f"Unsupported meta_state version: {version}")

@@ -17,6 +17,11 @@ All notable changes to this project will be documented in this file.
   for `head_dim=256` (Gemma 4, Kimi MLA `kv_lora_rank` after split).
   Opt-in via `ISOQUANT_USE_NPT8_FUSED=1` (default OFF; on for sites that
   enable it).
+- **NPT=16 fused attention path** (`fused_kv_decode_npt16.py`,
+  `tests/test_fused_npt16.py`, `tests/conftest_npt16.py`): single-pass
+  fused attention for `head_dim=512` (Kimi MLA `kv_lora_rank=512` latent).
+  Opt-in via `ISOQUANT_USE_NPT16_FUSED=1` (default OFF). Synthetic tests
+  pass; real-weight MLA logit-parity gate not run from this repo.
 - §3.4 evidence: paired-repeat ablation (`profile_ablation.py`) and
   Gemma4 default-suite quality gate.
 - Lane C residency-sweep tooling
@@ -45,12 +50,22 @@ All notable changes to this project will be documented in this file.
   for missing `_cache_mode`, not active defaults.
 
 ### Caveats
+
+> **Note on evidence location:** the JSON artifacts that back the §3.4 and
+> Lane C findings below were produced in the project repository
+> (TurboQuantNemo) and intentionally NOT included in this RotaryQuant
+> commit. The summary numbers are reproduced here for context; reproducing
+> them in this repo requires running `scripts/profile_ablation.py` and
+> `scripts/sweep_kimi_default_cache_residency.py` against the appropriate
+> models locally.
+
 - **FUSED_ENCODE introduces measurable numerical drift on long responses.**
-  Verified on Gemma 4-26B-A4B (head_dim=256, non-fallback path) under
-  greedy + seed=42 + v2 default suite (5 prompts × 200 tokens):
+  Verified on Gemma 4-26B-A4B (head_dim=256, non-fallback NPT=8 path)
+  under a wall-clock end-to-end protocol (greedy + seed=42, v2 default
+  prompt suite = 5 prompts × max 200 tokens):
   - All 4 conditions (`baseline_iso`, `fused_encode`, `prealloc`,
     `combined`) PASS the harness 5/5.
-  - `prealloc` alone is byte-identical to baseline.
+  - `prealloc` alone is byte-identical to baseline output.
   - `FUSED_ENCODE=1` produces measurably different outputs for 4 of 5
     prompts (the fused Metal compress/pack kernel does normalise/FWHT/
     SO(4)/quantise/pack in a different float-op order; drift accumulates
@@ -58,9 +73,13 @@ All notable changes to this project will be documented in this file.
     sentence content.
   - Drift does NOT break per-task harness criteria but DOES change what
     the model says. Applications requiring bit-reproducibility vs the
-    pre-§3.4 defaults must opt out.
-  - `combined` is 23% faster end-to-end (38.6s vs 50.0s baseline on
-    Gemma4 default suite).
+    pre-§3.4 defaults must opt out: `ISOQUANT_FUSED_ENCODE=0`.
+  - `combined` is 23% faster end-to-end **on this default-suite,
+    wall-clock measurement** (38.6 s vs 50.0 s baseline). This is a
+    different metric / protocol from the alpha-release headline numbers
+    (tok/s + memory + 2 h soak). The two should not be compared
+    directly; the §3.4 number is a localized write-path improvement on
+    one suite, not a re-measurement of the alpha headline.
 - **Kimi K2.6 default-cache residency cliff at exactly 480 experts**
   (= 60 MoE layers × 8 top-k = per-step working set). `max_resident_experts < 480`
   forces 0% hit rate (cache cannot hold one full step). Above 480 the

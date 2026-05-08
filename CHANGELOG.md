@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 ## [Unreleased]
 
 ### Added
+- **Fused write-path compression** (`mlx_lm/models/fused_kv_compress.py`):
+  Metal-backed normalize + FWHT + SO(4) + quantize + pack in a single
+  dispatch. Opt-in via `ISOQUANT_FUSED_ENCODE=1`; **graduated to default
+  on 2026-05-05** after §3.4 paired-ablation evidence.
+- **Pre-allocated cache mode** (`ISOQUANT_CACHE_MODE=prealloc`): O(1)
+  pointer-bump append replaces O(T) `mx.concatenate`. **Graduated to
+  default on 2026-05-05.**
+- **NPT=8 fused attention path** (`fused_kv_decode_npt8.py`,
+  `fused_kv_decode_npt8_tiled.py`): single-pass + T-tiled fused attention
+  for `head_dim=256` (Gemma 4, Kimi MLA `kv_lora_rank` after split).
+  Opt-in via `ISOQUANT_USE_NPT8_FUSED=1` (default OFF; on for sites that
+  enable it).
+- **NPT=16 fused attention path** (`fused_kv_decode_npt16.py`,
+  `tests/test_fused_npt16.py`, `tests/conftest_npt16.py`): single-pass
+  fused attention for `head_dim=512` (Kimi MLA `kv_lora_rank=512` latent).
+  Opt-in via `ISOQUANT_USE_NPT16_FUSED=1` (default OFF). Synthetic tests
+  pass; real-weight MLA logit-parity gate not run from this repo.
+- §3.4 evidence: paired-repeat ablation (`profile_ablation.py`) and
+  Gemma4 default-suite quality gate.
+- Lane C residency-sweep tooling
+  (`scripts/sweep_kimi_default_cache_residency.py`,
+  `scripts/ab_kimi_layered_stack.py`) for measuring Kimi K2.x default-MLA
+  decode throughput vs `max_resident_experts`.
+- New IsoQuant tests: `test_fused_kv_compress.py`,
+  `test_iso_incremental_pack.py`, `test_fused_npt8.py`,
+  `test_fused_npt8_tiled.py` + shared `conftest_npt8.py`.
 - Identity guide (RotaryQuant vs IsoQuant vs TurboQuant) in README
 - MLA/DKV sub-block split constraint documentation (hard blocker for Kimi path)
 - AttnRes predictor status and decision rationale
@@ -13,9 +39,64 @@ All notable changes to this project will be documented in this file.
 - Deployment & stability section with risk gates
 - CHANGELOG.md
 
+### Changed
+- **Runtime defaults flipped (2026-05-05, §3.4 graduation)**:
+  `ISOQUANT_CACHE_MODE` default `concat_append` → `prealloc`;
+  `ISOQUANT_FUSED_ENCODE` default `0` → `1`. Every IsoQuant cache
+  instance constructed without explicit env vars now runs in `combined`
+  mode. Opt-out: set the env vars to the old values explicitly. Defensive
+  `getattr(self, "_cache_mode", "concat_append")` fallbacks elsewhere in
+  `mlx_isoquant.py` are intentionally unchanged — they are safety nets
+  for missing `_cache_mode`, not active defaults.
+
+### Caveats
+
+> **Note on evidence location:** the JSON artifacts that back the §3.4 and
+> Lane C findings below were produced in the project repository
+> (TurboQuantNemo) and intentionally NOT included in this RotaryQuant
+> commit. The summary numbers are reproduced here for context; reproducing
+> them in this repo requires running `scripts/profile_ablation.py` and
+> `scripts/sweep_kimi_default_cache_residency.py` against the appropriate
+> models locally.
+
+- **FUSED_ENCODE introduces measurable numerical drift on long responses.**
+  Verified on Gemma 4-26B-A4B (head_dim=256, non-fallback NPT=8 path)
+  under a wall-clock end-to-end protocol (greedy + seed=42, v2 default
+  prompt suite = 5 prompts × max 200 tokens):
+  - All 4 conditions (`baseline_iso`, `fused_encode`, `prealloc`,
+    `combined`) PASS the harness 5/5.
+  - `prealloc` alone is byte-identical to baseline output.
+  - `FUSED_ENCODE=1` produces measurably different outputs for 4 of 5
+    prompts (the fused Metal compress/pack kernel does normalise/FWHT/
+    SO(4)/quantise/pack in a different float-op order; drift accumulates
+    over the response). Different markdown formatting / different
+    sentence content.
+  - Drift does NOT break per-task harness criteria but DOES change what
+    the model says. Applications requiring bit-reproducibility vs the
+    pre-§3.4 defaults must opt out: `ISOQUANT_FUSED_ENCODE=0`.
+  - `combined` is 23% faster end-to-end **on this default-suite,
+    wall-clock measurement** (38.6 s vs 50.0 s baseline). This is a
+    different metric / protocol from the alpha-release headline numbers
+    (tok/s + memory + 2 h soak). The two should not be compared
+    directly; the §3.4 number is a localized write-path improvement on
+    one suite, not a re-measurement of the alpha headline.
+- **Kimi K2.6 default-cache residency cliff at exactly 480 experts**
+  (= 60 MoE layers × 8 top-k = per-step working set). `max_resident_experts < 480`
+  forces 0% hit rate (cache cannot hold one full step). Above 480 the
+  throughput plateau is shallow (0.484-0.568 tok/s, ~17% spread,
+  std comparable). v2 mechanical winner is 720 but margin over 480 is
+  6.8% and within step-time std. **Provisional guidance:** never use
+  `max_resident_experts < 480`; use 480 (RAM-safe) or 720 (v2 mechanical
+  winner). Crowning a single "best" residency requires paired-repeat
+  measurement (deferred).
+
 ### Fixed
 - Mermaid diagram parse errors (escaped parentheses in node labels)
 - Symbol reference table rendering (`\mathfrak` replaced with plain notation)
+- `scripts/profile_npt8_metal.py`: pinned `ISOQUANT_FUSED_ENCODE=0` at
+  the script-baseline level + restored `=0` (not `pop`) after Phase B2
+  cleanup, so multi-T-loop "IsoQuant unpatched" baselines do not silently
+  inherit the new `FUSED_ENCODE=1` runtime default.
 
 ## [0.1.0-alpha.1] — 2026-04-14
 

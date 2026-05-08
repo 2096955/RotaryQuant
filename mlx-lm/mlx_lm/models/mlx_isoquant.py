@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import os
+import time
 
 import numpy as np
 import mlx.core as mx
@@ -21,6 +22,103 @@ from .mlx_turboquant import (
 )
 
 _METAL_BACKEND = None
+
+
+# ---------------------------------------------------------------------------
+# Module-level instrumentation. Aggregated across all per-layer cache
+# instances. Reset before each benchmark run via ``reset_stats()`` and read
+# after via ``stats_summary()``. Modelled on ``mx.get_peak_memory()`` —
+# global state is fine because there is one cache pool per generation run.
+# ---------------------------------------------------------------------------
+
+
+class IsoQuantStats:
+    """Counters for IsoQuant cache activity (write, read, fused metal)."""
+
+    __slots__ = (
+        "prefill_calls",
+        "prefill_tokens",
+        "decode_calls",
+        "decode_tokens",
+        "compress_calls",
+        "decompress_calls",
+        "read_keys_calls",
+        "read_values_calls",
+        "finalize_calls",
+        "fused_metal_attempts",
+        "fused_metal_failures",
+        "packed_cache_hits",
+        "packed_cache_misses",
+        "fallback_invocations",
+        "unfused_fallback_calls",
+        "packed_key_repack_ms",
+        "packed_value_repack_ms",
+        "fused_qk_ms",
+        "fused_softmax_ms",
+        "fused_value_ms",
+        "fused_value_tiled_ms",
+        "fused_inverse_ms",
+        "fused_single_kernel_ms",
+        "fused_metal_total_ms",
+        "decode_key_compress_ms",
+        "decode_value_compress_ms",
+        "decode_concat_ms",
+    )
+
+    def __init__(self) -> None:
+        self.reset()
+
+    def reset(self) -> None:
+        for f in self.__slots__:
+            setattr(self, f, 0)
+
+    def to_dict(self) -> dict:
+        d = {f: getattr(self, f) for f in self.__slots__}
+        # Derived rates — guard divisions
+        packed_total = self.packed_cache_hits + self.packed_cache_misses
+        d["packed_cache_hit_rate"] = (
+            round(self.packed_cache_hits / packed_total, 4) if packed_total else None
+        )
+        fused_total = self.fused_metal_attempts
+        d["fused_metal_success_rate"] = (
+            round(1 - self.fused_metal_failures / fused_total, 4)
+            if fused_total
+            else None
+        )
+        d["packed_repack_ms_total"] = round(
+            self.packed_key_repack_ms + self.packed_value_repack_ms, 3
+        )
+        d["fused_kernel_ms_total"] = round(
+            self.fused_qk_ms
+            + self.fused_softmax_ms
+            + self.fused_value_ms
+            + self.fused_value_tiled_ms
+            + self.fused_inverse_ms
+            + self.fused_single_kernel_ms,
+            3,
+        )
+        d["decode_write_ms_total"] = round(
+            self.decode_key_compress_ms
+            + self.decode_value_compress_ms
+            + self.decode_concat_ms,
+            3,
+        )
+        return d
+
+
+_GLOBAL_STATS = IsoQuantStats()
+
+
+def get_stats() -> IsoQuantStats:
+    return _GLOBAL_STATS
+
+
+def reset_stats() -> None:
+    _GLOBAL_STATS.reset()
+
+
+def stats_summary() -> dict:
+    return _GLOBAL_STATS.to_dict()
 
 
 def _get_metal_backend():
@@ -297,6 +395,8 @@ class IsoQuantKVCache(TurboQuantKVCache):
     orthogonal R differs (Hadamard + isoclinic blocks vs dense QR).
     """
 
+    _PREALLOC_STEP = 256
+
     def __init__(
         self,
         num_heads: int,
@@ -329,17 +429,47 @@ class IsoQuantKVCache(TurboQuantKVCache):
             os.environ.get("ISOQUANT_USE_STRUCTURED_MLX", "0") == "1"
         )
         self._use_metal_runtime = os.environ.get("ISOQUANT_USE_METAL", "0") == "1"
+        self._profile_fused_timing = (
+            os.environ.get("ISOQUANT_PROFILE_METAL", "0") == "1"
+        )
         self._metal_runtime_error: str | None = None
         self._fused_metal_ok: bool | None = (
             None  # None=untested, True=works, False=failed
         )
         self._packed_keys_cache: mx.array | None = None
         self._packed_values_cache: mx.array | None = None
+        # Runtime defaults graduated by §3.4 (2026-05-05): combined =
+        # FUSED_ENCODE=1 + CACHE_MODE=prealloc. Evidence:
+        # artifacts/branch_c_profiling/write_path_ablation_paired_v2.json,
+        # artifacts/branch_c_profiling/write_path_quality_gate_gemma4/.
+        # FUSED_ENCODE introduces measurable numerical drift but per-task
+        # quality holds; opt out with ISOQUANT_FUSED_ENCODE=0 if bit-
+        # reproducibility vs the prior default is required.
+        self._cache_mode = os.environ.get("ISOQUANT_CACHE_MODE", "prealloc")
+        self._fused_encode_requested = (
+            os.environ.get("ISOQUANT_FUSED_ENCODE", "1") == "1"
+        )
+        self._use_fused_encode = False
+        self._fused_encode_verified = False
         if self._fallback_cache is None:
             try:
                 self._set_rotation_components(self.num_heads, self.head_dim)
             except Exception:
                 self._activate_fallback_cache(self.num_heads, self.head_dim)
+        self._resolve_fused_encode_gate()
+
+    @classmethod
+    def from_state(cls, state: dict, meta_state=None, **kwargs):
+        if meta_state is None:
+            raise ValueError(
+                "meta_state is required for from_state reconstruction. "
+                "Cannot restore IsoQuant cache without version, bit_width, "
+                "num_heads, and head_dim."
+            )
+        obj = cls.__new__(cls)
+        obj.meta_state = meta_state
+        obj.state = state
+        return obj
 
     @property
     def meta_state(self):
@@ -390,10 +520,26 @@ class IsoQuantKVCache(TurboQuantKVCache):
             os.environ.get("ISOQUANT_USE_STRUCTURED_MLX", "0") == "1"
         )
         self._use_metal_runtime = os.environ.get("ISOQUANT_USE_METAL", "0") == "1"
+        self._profile_fused_timing = (
+            os.environ.get("ISOQUANT_PROFILE_METAL", "0") == "1"
+        )
         self._metal_runtime_error = None
         self._fused_metal_ok = None
         self._packed_keys_cache = None
         self._packed_values_cache = None
+        # Runtime defaults graduated by §3.4 (2026-05-05): combined =
+        # FUSED_ENCODE=1 + CACHE_MODE=prealloc. Evidence:
+        # artifacts/branch_c_profiling/write_path_ablation_paired_v2.json,
+        # artifacts/branch_c_profiling/write_path_quality_gate_gemma4/.
+        # FUSED_ENCODE introduces measurable numerical drift but per-task
+        # quality holds; opt out with ISOQUANT_FUSED_ENCODE=0 if bit-
+        # reproducibility vs the prior default is required.
+        self._cache_mode = os.environ.get("ISOQUANT_CACHE_MODE", "prealloc")
+        self._fused_encode_requested = (
+            os.environ.get("ISOQUANT_FUSED_ENCODE", "1") == "1"
+        )
+        self._use_fused_encode = False
+        self._fused_encode_verified = False
         try:
             self.compressor = TurboQuantCompressor(
                 bit_width=self.bit_width,
@@ -404,6 +550,15 @@ class IsoQuantKVCache(TurboQuantKVCache):
             self._set_rotation_components(self.num_heads, self.head_dim)
         except Exception:
             self._activate_fallback_cache(self.num_heads, self.head_dim)
+        self._resolve_fused_encode_gate()
+        if self._cache_mode == "prealloc" and getattr(self, "compressed_keys", None):
+            from .fused_kv_decode_kernels import pack_indices_3bit
+
+            self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
+            self._packed_values_cache = pack_indices_3bit(
+                self.compressed_values["indices"]
+            )
+            self._extend_buffers_by_step()
 
     def _set_rotation_components(self, num_heads: int, head_dim: int) -> None:
         components = build_isoquant_rotation_components(
@@ -417,6 +572,23 @@ class IsoQuantKVCache(TurboQuantKVCache):
         self.block_matrices = components["block_matrices"]
         self.block_matrices_t = components["block_matrices_t"]
         self._use_hadamard = bool(components["use_hadamard"])
+
+    def _resolve_fused_encode_gate(self) -> None:
+        """Evaluate all preconditions for fused Metal encode path.
+
+        Requires: env var set, D in {128, 256}, 3-bit quantization,
+        iso_v2 (FWHT enabled), and no fallback cache.
+        """
+        if not getattr(self, "_fused_encode_requested", False):
+            self._use_fused_encode = False
+            return
+        self._use_fused_encode = (
+            self.head_dim in (128, 256)
+            and self.bit_width == 3
+            and getattr(self, "_use_hadamard", False)
+            and getattr(self, "_apply_global_mix", True)
+            and self._fallback_cache is None
+        )
 
     def _rotate_forward(self, x: mx.array) -> mx.array:
         q_t = mx.swapaxes(self.rotation_matrices, -2, -1)
@@ -444,6 +616,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
         return structured_rotate_inverse(x_rot, self.block_matrices, self._use_hadamard)
 
     def _decompress_batch(self, compressed: dict[str, mx.array]) -> mx.array:
+        _GLOBAL_STATS.decompress_calls += 1
         indices = compressed["indices"]
         x_rot_quant = self.compressor.centroids[indices]
         x_hat_unit = self._rotate_inverse(x_rot_quant)
@@ -452,6 +625,129 @@ class IsoQuantKVCache(TurboQuantKVCache):
     def _invalidate_fused_caches(self) -> None:
         self._packed_keys_cache = None
         self._packed_values_cache = None
+
+    def _ensure_buffer_capacity(self, additional: int) -> None:
+        """Extend all 6 preallocated buffers if offset + additional > capacity.
+
+        If packed caches are missing (e.g. after from_state restore), rebuild
+        them from the compressed indices first.
+        """
+        # Lazy rebuild of packed cache (handles from_state restore in prealloc mode)
+        if self._packed_keys_cache is None or self._packed_values_cache is None:
+            from .fused_kv_decode_kernels import pack_indices_3bit
+
+            self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
+            self._packed_values_cache = pack_indices_3bit(
+                self.compressed_values["indices"]
+            )
+
+        needed = self.offset + additional
+        current_cap = self.compressed_keys["indices"].shape[1]
+
+        if needed <= current_cap:
+            return
+
+        n_steps = (
+            needed - current_cap + self._PREALLOC_STEP - 1
+        ) // self._PREALLOC_STEP
+        extend_by = n_steps * self._PREALLOC_STEP
+
+        H = self.compressed_keys["indices"].shape[0]
+        D_idx = self.compressed_keys["indices"].shape[2]
+        D_norm = self.compressed_keys["x_norm"].shape[2]
+        packed_D = self._packed_keys_cache.shape[2]
+
+        pad_idx = mx.zeros((H, extend_by, D_idx), dtype=mx.uint8)
+        pad_norm = mx.zeros((H, extend_by, D_norm), dtype=mx.float16)
+        pad_packed = mx.zeros((H, extend_by, packed_D), dtype=mx.uint8)
+
+        self.compressed_keys["indices"] = mx.concatenate(
+            [self.compressed_keys["indices"], pad_idx], axis=1
+        )
+        self.compressed_keys["x_norm"] = mx.concatenate(
+            [self.compressed_keys["x_norm"], pad_norm], axis=1
+        )
+        self.compressed_values["indices"] = mx.concatenate(
+            [self.compressed_values["indices"], pad_idx], axis=1
+        )
+        self.compressed_values["x_norm"] = mx.concatenate(
+            [self.compressed_values["x_norm"], pad_norm], axis=1
+        )
+        self._packed_keys_cache = mx.concatenate(
+            [self._packed_keys_cache, pad_packed], axis=1
+        )
+        self._packed_values_cache = mx.concatenate(
+            [self._packed_values_cache, pad_packed], axis=1
+        )
+
+    def _extend_buffers_by_step(self) -> None:
+        """Extend compressed + packed buffers by _PREALLOC_STEP zeros."""
+        H = self.compressed_keys["indices"].shape[0]
+        D_idx = self.compressed_keys["indices"].shape[2]
+        D_norm = self.compressed_keys["x_norm"].shape[2]
+        packed_D = self._packed_keys_cache.shape[2]
+
+        pad_idx = mx.zeros((H, self._PREALLOC_STEP, D_idx), dtype=mx.uint8)
+        pad_norm = mx.zeros((H, self._PREALLOC_STEP, D_norm), dtype=mx.float16)
+        pad_packed = mx.zeros((H, self._PREALLOC_STEP, packed_D), dtype=mx.uint8)
+
+        self.compressed_keys["indices"] = mx.concatenate(
+            [self.compressed_keys["indices"], pad_idx], axis=1
+        )
+        self.compressed_keys["x_norm"] = mx.concatenate(
+            [self.compressed_keys["x_norm"], pad_norm], axis=1
+        )
+        self.compressed_values["indices"] = mx.concatenate(
+            [self.compressed_values["indices"], pad_idx], axis=1
+        )
+        self.compressed_values["x_norm"] = mx.concatenate(
+            [self.compressed_values["x_norm"], pad_norm], axis=1
+        )
+        self._packed_keys_cache = mx.concatenate(
+            [self._packed_keys_cache, pad_packed], axis=1
+        )
+        self._packed_values_cache = mx.concatenate(
+            [self._packed_values_cache, pad_packed], axis=1
+        )
+        mx.eval(
+            self.compressed_keys["indices"],
+            self.compressed_keys["x_norm"],
+            self.compressed_values["indices"],
+            self.compressed_values["x_norm"],
+            self._packed_keys_cache,
+            self._packed_values_cache,
+        )
+
+    def _profile_mx_call(self, stat_name: str, fn):
+        if not self._profile_fused_timing:
+            return fn()
+
+        mx.synchronize()
+        t0 = time.perf_counter()
+        out = fn()
+        mx.eval(out)
+        mx.synchronize()
+        setattr(
+            _GLOBAL_STATS,
+            stat_name,
+            getattr(_GLOBAL_STATS, stat_name) + (time.perf_counter() - t0) * 1000.0,
+        )
+        return out
+
+    def _profile_mx_eval(self, stat_name: str, *arrays) -> None:
+        if not self._profile_fused_timing:
+            mx.eval(*arrays)
+            return
+
+        mx.synchronize()
+        t0 = time.perf_counter()
+        mx.eval(*arrays)
+        mx.synchronize()
+        setattr(
+            _GLOBAL_STATS,
+            stat_name,
+            getattr(_GLOBAL_STATS, stat_name) + (time.perf_counter() - t0) * 1000.0,
+        )
 
     def finalize_deferred_prefill(self) -> None:
         """Bulk-compress accumulated FP16 KV into IsoQuant at the prefill→decode boundary.
@@ -462,6 +758,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
         """
         if not self._deferred:
             return
+        _GLOBAL_STATS.finalize_calls += 1
         self._deferred = False
 
         if self._fallback_cache is not None:
@@ -480,11 +777,22 @@ class IsoQuantKVCache(TurboQuantKVCache):
         # Bulk compress
         self.compressed_keys = self._compress_batch(all_keys)
         self.compressed_values = self._compress_batch(all_values)
-        self._invalidate_fused_caches()
+        # Phase 2: pre-populate packed cache once at finalize so decode appends
+        # extend rather than rebuild. Replaces the prior _invalidate_fused_caches()
+        # call which forced a lazy rebuild on every fused_attention.
+        from .fused_kv_decode_kernels import pack_indices_3bit
+
+        self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
+        self._packed_values_cache = pack_indices_3bit(self.compressed_values["indices"])
         mx.eval(
             *[v for v in self.compressed_keys.values() if isinstance(v, mx.array)],
             *[v for v in self.compressed_values.values() if isinstance(v, mx.array)],
+            self._packed_keys_cache,
+            self._packed_values_cache,
         )
+
+        if self._cache_mode == "prealloc":
+            self._extend_buffers_by_step()
 
         # Free the FP16 buffer
         self._fp16_keys.clear()
@@ -492,6 +800,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
 
     def _compress_batch(self, x: mx.array) -> dict[str, mx.array]:
         """Batched MLX quantization for (heads, seq, dim), avoiding Python per-head loops."""
+        _GLOBAL_STATS.compress_calls += 1
         x_f32 = x.astype(mx.float32)
         x_norm = mx.linalg.norm(x_f32, axis=-1, keepdims=True)
         x_unit = x_f32 / mx.maximum(x_norm, mx.array(1e-8, dtype=mx.float32))
@@ -520,6 +829,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
                 seed=self.seed,
             )
             self._set_rotation_components(self.num_heads, self.head_dim)
+            self._resolve_fused_encode_gate()
             self._invalidate_fused_caches()
             self._fused_metal_ok = None
         except Exception:
@@ -541,6 +851,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
             self.offset = offset
         self._ensure_runtime_shape(n_kv_heads, int(keys.shape[-1]))
         if self._fallback_cache is not None:
+            _GLOBAL_STATS.fallback_invocations += 1
             out = self._fallback_cache.update_and_fetch(keys, values)
             self._sync_fallback_offset()
             return out
@@ -550,6 +861,8 @@ class IsoQuantKVCache(TurboQuantKVCache):
 
         if self._deferred:
             # Prefill phase: accumulate FP16, no compression (zero error compounding).
+            _GLOBAL_STATS.prefill_calls += 1
+            _GLOBAL_STATS.prefill_tokens += seq_len
             self._fp16_keys.append(k_batch)
             self._fp16_values.append(v_batch)
             self._seq_len += seq_len
@@ -557,49 +870,165 @@ class IsoQuantKVCache(TurboQuantKVCache):
             return keys, values
 
         # Decode phase (post-finalize): compress incrementally.
-        new_compressed_keys = self._compress_batch(k_batch)
-        new_compressed_vals = self._compress_batch(v_batch)
+        _GLOBAL_STATS.decode_calls += 1
+        _GLOBAL_STATS.decode_tokens += seq_len
 
-        def _concat_compressed(existing, new):
-            if not existing:
-                return new
-            for key in new:
-                existing[key] = mx.concatenate([existing[key], new[key]], axis=1)
-            return existing
+        new_packed_k = None
+        new_packed_v = None
 
-        self.compressed_keys = _concat_compressed(
-            self.compressed_keys, new_compressed_keys
-        )
-        self.compressed_values = _concat_compressed(
-            self.compressed_values, new_compressed_vals
-        )
-        self._invalidate_fused_caches()
-        mx.eval(
-            *[v for v in self.compressed_keys.values() if isinstance(v, mx.array)],
-            *[v for v in self.compressed_values.values() if isinstance(v, mx.array)],
-        )
+        if self._use_fused_encode:
+            try:
+                from .fused_kv_compress import fused_compress_and_pack
+
+                def _fused_encode(x_batch):
+                    packed, norms, indices = fused_compress_and_pack(
+                        x_batch,
+                        self.block_matrices,
+                        self.compressor.centroids,
+                        self.compressor.boundaries,
+                    )
+                    return packed, {"indices": indices, "x_norm": norms}
+
+                new_packed_k, new_compressed_keys = self._profile_mx_call(
+                    "decode_key_compress_ms",
+                    lambda: _fused_encode(k_batch),
+                )
+                new_packed_v, new_compressed_vals = self._profile_mx_call(
+                    "decode_value_compress_ms",
+                    lambda: _fused_encode(v_batch),
+                )
+                if not getattr(self, "_fused_encode_verified", False):
+                    mx.eval(
+                        new_packed_k,
+                        new_compressed_keys["indices"],
+                        new_compressed_keys["x_norm"],
+                        new_packed_v,
+                        new_compressed_vals["indices"],
+                        new_compressed_vals["x_norm"],
+                    )
+                    self._fused_encode_verified = True
+            except Exception:
+                self._use_fused_encode = False
+                new_packed_k = None
+                new_packed_v = None
+
+        if new_packed_k is None:
+            new_compressed_keys = self._profile_mx_call(
+                "decode_key_compress_ms",
+                lambda: self._compress_batch(k_batch),
+            )
+            new_compressed_vals = self._profile_mx_call(
+                "decode_value_compress_ms",
+                lambda: self._compress_batch(v_batch),
+            )
+
+        from .fused_kv_decode_kernels import pack_indices_3bit
+
+        if self._cache_mode == "prealloc":
+            self._ensure_buffer_capacity(seq_len)
+            pos = self.offset
+            end = pos + seq_len
+            if new_packed_k is None:
+                new_packed_k = pack_indices_3bit(new_compressed_keys["indices"])
+                new_packed_v = pack_indices_3bit(new_compressed_vals["indices"])
+            self._profile_mx_eval(
+                "decode_concat_ms",
+                new_compressed_keys["indices"],
+                new_compressed_keys["x_norm"],
+                new_compressed_vals["indices"],
+                new_compressed_vals["x_norm"],
+                new_packed_k,
+                new_packed_v,
+            )
+            self.compressed_keys["indices"][:, pos:end, :] = new_compressed_keys[
+                "indices"
+            ]
+            self.compressed_keys["x_norm"][:, pos:end, :] = new_compressed_keys[
+                "x_norm"
+            ]
+            self.compressed_values["indices"][:, pos:end, :] = new_compressed_vals[
+                "indices"
+            ]
+            self.compressed_values["x_norm"][:, pos:end, :] = new_compressed_vals[
+                "x_norm"
+            ]
+            self._packed_keys_cache[:, pos:end, :] = new_packed_k
+            self._packed_values_cache[:, pos:end, :] = new_packed_v
+        else:
+
+            def _concat_compressed(existing, new):
+                if not existing:
+                    return new
+                for key in new:
+                    existing[key] = mx.concatenate([existing[key], new[key]], axis=1)
+                return existing
+
+            self.compressed_keys = _concat_compressed(
+                self.compressed_keys, new_compressed_keys
+            )
+            self.compressed_values = _concat_compressed(
+                self.compressed_values, new_compressed_vals
+            )
+            if new_packed_k is None:
+                new_packed_k = pack_indices_3bit(new_compressed_keys["indices"])
+                new_packed_v = pack_indices_3bit(new_compressed_vals["indices"])
+            if self._packed_keys_cache is None:
+                self._packed_keys_cache = new_packed_k
+                self._packed_values_cache = new_packed_v
+            else:
+                self._packed_keys_cache = mx.concatenate(
+                    [self._packed_keys_cache, new_packed_k], axis=1
+                )
+                self._packed_values_cache = mx.concatenate(
+                    [self._packed_values_cache, new_packed_v], axis=1
+                )
+            self._profile_mx_eval(
+                "decode_concat_ms",
+                *[v for v in self.compressed_keys.values() if isinstance(v, mx.array)],
+                *[
+                    v
+                    for v in self.compressed_values.values()
+                    if isinstance(v, mx.array)
+                ],
+                self._packed_keys_cache,
+                self._packed_values_cache,
+            )
         self._seq_len += seq_len
         self.offset += seq_len
         return keys, values
 
     def reconstruct_keys(self) -> mx.array:
         """Full key sequence for SDPA; supports deferred FP16 prefill before bulk compress."""
+        _GLOBAL_STATS.read_keys_calls += 1
         if self._fallback_cache is not None:
             return self._get_fallback_keys()
         if self._deferred and self._fp16_keys:
             full = mx.concatenate(self._fp16_keys, axis=1)
             return full[None, ...].astype(self._dtype)
-        x_hat = self._decompress_batch(self.compressed_keys)
+        if self._cache_mode == "prealloc":
+            sliced = {
+                k: v[:, : self.offset, :] for k, v in self.compressed_keys.items()
+            }
+        else:
+            sliced = self.compressed_keys
+        x_hat = self._decompress_batch(sliced)
         return x_hat[None, ...].astype(self._dtype)
 
     def get_values(self) -> mx.array:
         """Full value sequence for SDPA (pair with ``reconstruct_keys``)."""
+        _GLOBAL_STATS.read_values_calls += 1
         if self._fallback_cache is not None:
             return self._get_fallback_values()
         if self._deferred and self._fp16_values:
             full = mx.concatenate(self._fp16_values, axis=1)
             return full[None, ...].astype(self._dtype)
-        x_hat = self._decompress_batch(self.compressed_values)
+        if self._cache_mode == "prealloc":
+            sliced = {
+                k: v[:, : self.offset, :] for k, v in self.compressed_values.items()
+            }
+        else:
+            sliced = self.compressed_values
+        x_hat = self._decompress_batch(sliced)
         return x_hat[None, ...].astype(self._dtype)
 
     # ------------------------------------------------------------------
@@ -648,7 +1077,19 @@ class IsoQuantKVCache(TurboQuantKVCache):
         Returns:
             output: (B, num_heads, 1, head_dim) — attention output
         """
+        if self.compressed_keys is None or self._seq_len == 0:
+            return mx.zeros_like(queries)
+
         if not self.supports_fused_attention:
+            import warnings
+
+            if self.bit_width != 3:
+                warnings.warn(
+                    f"IsoQuant fused path unavailable: bit_width={self.bit_width} "
+                    f"(only 3-bit supported). Using unfused O(T*d^2) path.",
+                    stacklevel=2,
+                )
+            _GLOBAL_STATS.unfused_fallback_calls += 1
             keys = self.reconstruct_keys()
             values = self.get_values()
             from .base import scaled_dot_product_attention
@@ -659,7 +1100,10 @@ class IsoQuantKVCache(TurboQuantKVCache):
 
         B, H_q, _, D = queries.shape
         H_kv = self.num_heads
-        T = self.compressed_keys["indices"].shape[1]
+        if self._cache_mode == "prealloc":
+            T = self.offset
+        else:
+            T = self.compressed_keys["indices"].shape[1]
         repeats = H_q // H_kv if H_q != H_kv else 1
 
         # --- Rotate query forward (always dense — one vector, O(d²)) ---
@@ -670,6 +1114,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
 
         # --- Try Metal-fused kernels (packed 3-bit, no materialisation) ---
         if self._fused_metal_ok is not False:
+            _GLOBAL_STATS.fused_metal_attempts += 1
             try:
                 out = self._fused_attention_metal(
                     q_rot, scale, mask, H_q, H_kv, T, D, repeats
@@ -677,6 +1122,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
                 self._fused_metal_ok = True
                 return out[None, :, None, :].astype(queries.dtype)
             except Exception:
+                _GLOBAL_STATS.fused_metal_failures += 1
                 self._fused_metal_ok = False
 
         # --- MLX-ops fallback (centroid gather + dense matmul) ---
@@ -691,6 +1137,7 @@ class IsoQuantKVCache(TurboQuantKVCache):
     # in one 32-thread group, losing ~30-50% even at T=16.
     # Disabled (threshold=0) until the single kernel gains T-parallel tiling.
     _SINGLE_KERNEL_T_THRESHOLD = 0
+    _NPT8_TILED_T_THRESHOLD = 512
 
     def _fused_attention_metal(
         self,
@@ -703,34 +1150,134 @@ class IsoQuantKVCache(TurboQuantKVCache):
         D: int,
         repeats: int,
     ) -> mx.array:
-        """Execute attention via Metal kernels on packed 3-bit storage.
-
-        Adaptively selects between:
-          - Single fully-fused kernel (T <= threshold): one dispatch, online softmax,
-            eliminates 3 kernel launch overheads (~150μs saved).
-          - Legacy 3-kernel pipeline (T > threshold): parallelizes QK dot across T
-            tokens with grid=(32*T, H), better GPU occupancy at long context.
-        """
+        """Execute attention via Metal kernels on packed 3-bit storage."""
         from .fused_kv_decode_kernels import pack_indices_3bit
 
+        total_t0 = time.perf_counter() if self._profile_fused_timing else None
+
         if self._packed_keys_cache is None:
-            self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
-        if self._packed_values_cache is None:
-            self._packed_values_cache = pack_indices_3bit(
-                self.compressed_values["indices"]
+            _GLOBAL_STATS.packed_cache_misses += 1
+            if self._cache_mode == "prealloc":
+                valid_k_idx = self.compressed_keys["indices"][:, : self.offset, :]
+            else:
+                valid_k_idx = self.compressed_keys["indices"]
+            self._packed_keys_cache = self._profile_mx_call(
+                "packed_key_repack_ms",
+                lambda: pack_indices_3bit(valid_k_idx),
             )
+            if self._cache_mode == "prealloc":
+                cap = self.compressed_keys["indices"].shape[1]
+                cur = self._packed_keys_cache.shape[1]
+                if cur < cap:
+                    pad = mx.zeros(
+                        (
+                            self._packed_keys_cache.shape[0],
+                            cap - cur,
+                            self._packed_keys_cache.shape[2],
+                        ),
+                        dtype=mx.uint8,
+                    )
+                    self._packed_keys_cache = mx.concatenate(
+                        [self._packed_keys_cache, pad], axis=1
+                    )
+        else:
+            _GLOBAL_STATS.packed_cache_hits += 1
+
+        if self._packed_values_cache is None:
+            _GLOBAL_STATS.packed_cache_misses += 1
+            if self._cache_mode == "prealloc":
+                valid_v_idx = self.compressed_values["indices"][:, : self.offset, :]
+            else:
+                valid_v_idx = self.compressed_values["indices"]
+            self._packed_values_cache = self._profile_mx_call(
+                "packed_value_repack_ms",
+                lambda: pack_indices_3bit(valid_v_idx),
+            )
+            if self._cache_mode == "prealloc":
+                cap = self.compressed_values["indices"].shape[1]
+                cur = self._packed_values_cache.shape[1]
+                if cur < cap:
+                    pad = mx.zeros(
+                        (
+                            self._packed_values_cache.shape[0],
+                            cap - cur,
+                            self._packed_values_cache.shape[2],
+                        ),
+                        dtype=mx.uint8,
+                    )
+                    self._packed_values_cache = mx.concatenate(
+                        [self._packed_values_cache, pad], axis=1
+                    )
+        else:
+            _GLOBAL_STATS.packed_cache_hits += 1
 
         k_packed = self._packed_keys_cache
         v_packed = self._packed_values_cache
 
-        # Norms: squeeze trailing dim, cast to f32
         k_norms = self.compressed_keys["x_norm"][:, :, 0].astype(mx.float32)
         v_norms = self.compressed_values["x_norm"][:, :, 0].astype(mx.float32)
         centroids = self.compressor.centroids.reshape(-1).astype(mx.float32)
         kv_head_map = mx.arange(H_q, dtype=mx.uint32) // repeats
 
-        if T <= self._SINGLE_KERNEL_T_THRESHOLD:
-            return self._fused_attention_single_kernel(
+        if self._cache_mode == "prealloc":
+            storage_stride = k_packed.shape[1]
+        else:
+            storage_stride = T
+
+        if D == 256 and os.environ.get("ISOQUANT_USE_NPT8_FUSED", "0") == "1":
+            if T >= self._NPT8_TILED_T_THRESHOLD:
+                out = self._fused_attention_npt8_tiled(
+                    k_packed,
+                    v_packed,
+                    centroids,
+                    k_norms,
+                    v_norms,
+                    q_rot,
+                    kv_head_map,
+                    scale,
+                    mask,
+                    H_q,
+                    H_kv,
+                    T,
+                    D,
+                    storage_stride,
+                )
+            else:
+                out = self._fused_attention_npt8(
+                    k_packed,
+                    v_packed,
+                    centroids,
+                    k_norms,
+                    v_norms,
+                    q_rot,
+                    kv_head_map,
+                    scale,
+                    mask,
+                    H_q,
+                    H_kv,
+                    T,
+                    D,
+                    storage_stride,
+                )
+        elif D == 512 and os.environ.get("ISOQUANT_USE_NPT16_FUSED", "0") == "1":
+            out = self._fused_attention_npt16(
+                k_packed,
+                v_packed,
+                centroids,
+                k_norms,
+                v_norms,
+                q_rot,
+                kv_head_map,
+                scale,
+                mask,
+                H_q,
+                H_kv,
+                T,
+                D,
+                storage_stride,
+            )
+        elif T <= self._SINGLE_KERNEL_T_THRESHOLD:
+            out = self._fused_attention_single_kernel(
                 k_packed,
                 v_packed,
                 centroids,
@@ -743,9 +1290,10 @@ class IsoQuantKVCache(TurboQuantKVCache):
                 H_q,
                 T,
                 D,
+                storage_stride,
             )
         else:
-            return self._fused_attention_3kernel(
+            out = self._fused_attention_3kernel(
                 k_packed,
                 v_packed,
                 centroids,
@@ -760,7 +1308,15 @@ class IsoQuantKVCache(TurboQuantKVCache):
                 T,
                 D,
                 repeats,
+                storage_stride,
             )
+        if total_t0 is not None:
+            mx.eval(out)
+            mx.synchronize()
+            _GLOBAL_STATS.fused_metal_total_ms += (
+                time.perf_counter() - total_t0
+            ) * 1000.0
+        return out
 
     def _fused_attention_single_kernel(
         self,
@@ -776,26 +1332,165 @@ class IsoQuantKVCache(TurboQuantKVCache):
         H_q,
         T,
         D,
+        storage_stride,
     ) -> mx.array:
         """Single fully-fused kernel: QK + online softmax + V + inverse rotation."""
         from .fused_kv_decode_kernels import fully_fused_attention
 
-        return fully_fused_attention(
-            K_packed=k_packed,
-            V_packed=v_packed,
-            centroids=centroids,
-            k_norms=k_norms,
-            v_norms=v_norms,
-            q_rot=q_rot,
-            kv_head_map=kv_head_map,
-            blocks_t=self.block_matrices_t,
-            scale=scale,
-            num_heads=H_q,
-            seq_len=T,
-            head_dim=D,
-            use_hadamard=self._use_hadamard,
-            mask=mask,
+        return self._profile_mx_call(
+            "fused_single_kernel_ms",
+            lambda: fully_fused_attention(
+                K_packed=k_packed,
+                V_packed=v_packed,
+                centroids=centroids,
+                k_norms=k_norms,
+                v_norms=v_norms,
+                q_rot=q_rot,
+                kv_head_map=kv_head_map,
+                blocks_t=self.block_matrices_t,
+                scale=scale,
+                num_heads=H_q,
+                seq_len=T,
+                head_dim=D,
+                use_hadamard=self._use_hadamard,
+                mask=mask,
+                storage_stride=storage_stride,
+            ),
         )
+
+    def _fused_attention_npt8(
+        self,
+        k_packed,
+        v_packed,
+        centroids,
+        k_norms,
+        v_norms,
+        q_rot,
+        kv_head_map,
+        scale,
+        mask,
+        H_q,
+        H_kv,
+        T,
+        D,
+        storage_stride,
+    ) -> mx.array:
+        """NPT=8 single-pass fused kernel for head_dim=256."""
+        from .fused_kv_decode_npt8 import fused_attention_npt8
+
+        return self._profile_mx_call(
+            "fused_single_kernel_ms",
+            lambda: fused_attention_npt8(
+                K_packed=k_packed,
+                V_packed=v_packed,
+                centroids=centroids,
+                k_norms=k_norms,
+                v_norms=v_norms,
+                q_rot=q_rot,
+                kv_head_map=kv_head_map,
+                blocks_t=self.block_matrices_t,
+                scale=scale,
+                use_hadamard=self._use_hadamard,
+                mask=mask,
+                num_heads=H_q,
+                seq_len=T,
+                head_dim=D,
+                storage_stride=storage_stride,
+            ),
+        )
+
+    def _fused_attention_npt16(
+        self,
+        k_packed,
+        v_packed,
+        centroids,
+        k_norms,
+        v_norms,
+        q_rot,
+        kv_head_map,
+        scale,
+        mask,
+        H_q,
+        H_kv,
+        T,
+        D,
+        storage_stride,
+    ) -> mx.array:
+        """NPT=16 single-pass fused kernel for head_dim=512."""
+        from .fused_kv_decode_npt16 import fused_attention_npt16
+
+        return self._profile_mx_call(
+            "fused_single_kernel_ms",
+            lambda: fused_attention_npt16(
+                K_packed=k_packed,
+                V_packed=v_packed,
+                centroids=centroids,
+                k_norms=k_norms,
+                v_norms=v_norms,
+                q_rot=q_rot,
+                kv_head_map=kv_head_map,
+                blocks_t=self.block_matrices_t,
+                scale=scale,
+                use_hadamard=self._use_hadamard,
+                mask=mask,
+                num_heads=H_q,
+                seq_len=T,
+                head_dim=D,
+                storage_stride=storage_stride,
+            ),
+        )
+
+    def _fused_attention_npt8_tiled(
+        self,
+        k_packed,
+        v_packed,
+        centroids,
+        k_norms,
+        v_norms,
+        q_rot,
+        kv_head_map,
+        scale,
+        mask,
+        H_q,
+        H_kv,
+        T,
+        D,
+        storage_stride,
+    ) -> mx.array:
+        """NPT=8 tiled fused kernel with FA2-style merge for long sequences."""
+        from .fused_kv_decode_npt8_tiled import fused_attention_npt8_tiled
+
+        try:
+            tile_size = int(os.environ.get("ISOQUANT_NPT8_TILE_SIZE", "256"))
+        except ValueError:
+            tile_size = 256
+
+        return self._profile_mx_call(
+            "fused_single_kernel_ms",
+            lambda: fused_attention_npt8_tiled(
+                K_packed=k_packed,
+                V_packed=v_packed,
+                centroids=centroids,
+                k_norms=k_norms,
+                v_norms=v_norms,
+                q_rot=q_rot,
+                kv_head_map=kv_head_map,
+                block_matrices=self.block_matrices,
+                scale=scale,
+                use_hadamard=self._use_hadamard,
+                mask=mask,
+                num_heads=H_q,
+                seq_len=T,
+                head_dim=D,
+                tile_size=tile_size,
+                storage_stride=storage_stride,
+            ),
+        )
+
+    # Crossover above which T-parallel tiling of fused_value_accum wins
+    # over the serial-T baseline. Default chosen from the analyst's M4 Max
+    # heuristic (128-256 sweet spot); override via ISOQUANT_VACCUM_TILE.
+    _T_TILED_VALUE_ACCUM_THRESHOLD = 256
 
     def _fused_attention_3kernel(
         self,
@@ -813,12 +1508,24 @@ class IsoQuantKVCache(TurboQuantKVCache):
         T,
         D,
         repeats,
+        storage_stride,
     ) -> mx.array:
         """Legacy 3-kernel pipeline: QK dot + softmax + V accum + inverse rotation."""
         from .fused_kv_decode_kernels import fused_qk_dot, fused_value_accum
 
-        scores = fused_qk_dot(
-            k_packed, centroids, k_norms, q_rot, kv_head_map, H_q, T, D
+        scores = self._profile_mx_call(
+            "fused_qk_ms",
+            lambda: fused_qk_dot(
+                k_packed,
+                centroids,
+                k_norms,
+                q_rot,
+                kv_head_map,
+                H_q,
+                T,
+                D,
+                storage_stride=storage_stride,
+            ),
         )
         scores = scores * scale
 
@@ -828,14 +1535,56 @@ class IsoQuantKVCache(TurboQuantKVCache):
                 m = m.squeeze(0)
             scores = scores + m
 
-        attn_weights = mx.softmax(scores, axis=-1)
-
-        output_rot = fused_value_accum(
-            v_packed, centroids, v_norms, attn_weights, kv_head_map, H_q, T, D
+        attn_weights = self._profile_mx_call(
+            "fused_softmax_ms",
+            lambda: mx.softmax(scores, axis=-1),
         )
 
-        return self._apply_inverse_rotation(
-            output_rot, H_q, H_kv, D, repeats, use_metal_kernel=True
+        if T > self._T_TILED_VALUE_ACCUM_THRESHOLD:
+            import os
+
+            from .fused_kv_decode_tiled import fused_value_accum_tiled
+
+            try:
+                tile_size = int(os.environ.get("ISOQUANT_VACCUM_TILE", 128))
+            except ValueError:
+                tile_size = 128
+            output_rot = self._profile_mx_call(
+                "fused_value_tiled_ms",
+                lambda: fused_value_accum_tiled(
+                    v_packed,
+                    centroids,
+                    v_norms,
+                    attn_weights,
+                    kv_head_map,
+                    H_q,
+                    T,
+                    D,
+                    tile_size=tile_size,
+                    storage_stride=storage_stride,
+                ),
+            )
+        else:
+            output_rot = self._profile_mx_call(
+                "fused_value_ms",
+                lambda: fused_value_accum(
+                    v_packed,
+                    centroids,
+                    v_norms,
+                    attn_weights,
+                    kv_head_map,
+                    H_q,
+                    T,
+                    D,
+                    storage_stride=storage_stride,
+                ),
+            )
+
+        return self._profile_mx_call(
+            "fused_inverse_ms",
+            lambda: self._apply_inverse_rotation(
+                output_rot, H_q, H_kv, D, repeats, use_metal_kernel=True
+            ),
         )
 
     # ----- MLX-ops fallback (centroid gather + dense matmul) -----
@@ -858,15 +1607,22 @@ class IsoQuantKVCache(TurboQuantKVCache):
         reduction — K and V are fully materialised in FP32 before the dot
         product.
         """
-        k_rot_quant = self.compressor.centroids[
-            self.compressed_keys["indices"]
-        ]  # (H_kv, T, D)
-        k_rot_scaled = k_rot_quant * self.compressed_keys["x_norm"].astype(mx.float32)
+        if self._cache_mode == "prealloc":
+            k_indices = self.compressed_keys["indices"][:, : self.offset, :]
+            k_xnorm = self.compressed_keys["x_norm"][:, : self.offset, :]
+            v_indices = self.compressed_values["indices"][:, : self.offset, :]
+            v_xnorm = self.compressed_values["x_norm"][:, : self.offset, :]
+        else:
+            k_indices = self.compressed_keys["indices"]
+            k_xnorm = self.compressed_keys["x_norm"]
+            v_indices = self.compressed_values["indices"]
+            v_xnorm = self.compressed_values["x_norm"]
 
-        v_rot_quant = self.compressor.centroids[
-            self.compressed_values["indices"]
-        ]  # (H_kv, T, D)
-        v_rot_scaled = v_rot_quant * self.compressed_values["x_norm"].astype(mx.float32)
+        k_rot_quant = self.compressor.centroids[k_indices]
+        k_rot_scaled = k_rot_quant * k_xnorm.astype(mx.float32)
+
+        v_rot_quant = self.compressor.centroids[v_indices]
+        v_rot_scaled = v_rot_quant * v_xnorm.astype(mx.float32)
 
         if repeats > 1:
             k_rot_scaled = mx.repeat(k_rot_scaled, repeats, axis=0)
@@ -928,3 +1684,63 @@ class IsoQuantKVCache(TurboQuantKVCache):
 
             return fused_inverse_rotate(x, self.block_matrices, self._use_hadamard)
         return self._rotate_inverse(x[:, None, :])[:, 0, :]
+
+    @property
+    def state(self) -> dict:
+        base = super().state
+        mode = getattr(self, "_cache_mode", "concat_append")
+        if mode == "prealloc" and getattr(self, "offset", 0) > 0:
+            T = self.offset
+            base["compressed_keys"] = {
+                k: v[:, :T, :] for k, v in self.compressed_keys.items()
+            }
+            base["compressed_values"] = {
+                k: v[:, :T, :] for k, v in self.compressed_values.items()
+            }
+        return base
+
+    @state.setter
+    def state(self, v):
+        TurboQuantKVCache.state.fset(self, v)
+        mode = getattr(self, "_cache_mode", "concat_append")
+        if mode == "prealloc" and self.compressed_keys:
+            self._invalidate_fused_caches()
+            from .fused_kv_decode_kernels import pack_indices_3bit
+
+            self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
+            self._packed_values_cache = pack_indices_3bit(
+                self.compressed_values["indices"]
+            )
+            self._extend_buffers_by_step()
+
+    def trim(self, n: int):
+        """Trim prefix tokens, invalidating packed caches."""
+        super().trim(n)
+        self._invalidate_fused_caches()
+        mode = getattr(self, "_cache_mode", "concat_append")
+        if mode == "prealloc" and self.compressed_keys:
+            from .fused_kv_decode_kernels import pack_indices_3bit
+
+            self._packed_keys_cache = pack_indices_3bit(self.compressed_keys["indices"])
+            self._packed_values_cache = pack_indices_3bit(
+                self.compressed_values["indices"]
+            )
+            self._extend_buffers_by_step()
+
+    def asymmetric_attention_scores(self, query, scale=1.0):
+        if getattr(self, "_cache_mode", "concat_append") == "prealloc":
+            saved_keys = self.compressed_keys
+            saved_values = self.compressed_values
+            T = self.offset
+            self.compressed_keys = {
+                k: v[:, :T, :] for k, v in self.compressed_keys.items()
+            }
+            self.compressed_values = {
+                k: v[:, :T, :] for k, v in self.compressed_values.items()
+            }
+            try:
+                return super().asymmetric_attention_scores(query, scale)
+            finally:
+                self.compressed_keys = saved_keys
+                self.compressed_values = saved_values
+        return super().asymmetric_attention_scores(query, scale)

@@ -9,6 +9,27 @@ from mlx.utils import tree_flatten, tree_map, tree_unflatten
 from .base import create_causal_mask
 
 
+def _get_turboquant_bits() -> int:
+    import os
+
+    try:
+        return int(os.environ.get("TURBOQUANT_BITS", 3))
+    except ValueError:
+        return 3
+
+
+def _get_isoquant_bits() -> int:
+    import os
+
+    iso_bits = os.environ.get("ISOQUANT_BITS")
+    if iso_bits is not None:
+        try:
+            return int(iso_bits)
+        except ValueError:
+            pass
+    return _get_turboquant_bits()
+
+
 def make_prompt_cache(
     model: nn.Module,
     max_kv_size: Optional[int] = None,
@@ -55,20 +76,42 @@ def make_prompt_cache(
         import os
 
         codebook_path = get_default_codebook_dir()
-        try:
-            bits = int(os.environ.get("TURBOQUANT_BITS", 3))
-        except ValueError:
-            bits = 3
+        tq_bits = _get_turboquant_bits()
+        iso_bits = _get_isoquant_bits()
         try:
             skip_layers = int(os.environ.get("TURBOQUANT_SKIP_LAYERS", 2))
         except ValueError:
             skip_layers = 2
 
+        # Detect MLA models (DeepseekV3, Kimi K2.x) — config may nest under text_config
+        _mla_config = config
+        if hasattr(config, "text_config"):
+            _mla_config = config.text_config
+        model_type = getattr(_mla_config, "model_type", "")
+        kv_lora_rank = getattr(_mla_config, "kv_lora_rank", None)
+        qk_rope_head_dim = getattr(_mla_config, "qk_rope_head_dim", None)
+        is_mla = kv_lora_rank is not None or model_type in (
+            "deepseek_v3",
+            "kimi_k2",
+            "kimi_k25",
+        )
+
         def make_quant_cache(layer_idx: int):
             if kv_cache_type == "rotorquant":
                 return RotorQuantKVCache(
                     head_dim=head_dim,
-                    bit_width=bits,
+                    bit_width=tq_bits,
+                    codebook_dir=codebook_path,
+                    seed=42,
+                )
+            if kv_cache_type == "isoquant" and is_mla:
+                from .kimi_mla_isoquant_dkv import KimiMLAIsoQuantCache
+
+                return KimiMLAIsoQuantCache(
+                    kv_lora_rank=kv_lora_rank or 512,
+                    qk_rope_head_dim=qk_rope_head_dim or 64,
+                    bit_width=iso_bits,
+                    layer_idx=layer_idx,
                     codebook_dir=codebook_path,
                     seed=42,
                 )
@@ -76,7 +119,7 @@ def make_prompt_cache(
                 return IsoQuantKVCache(
                     num_heads=n_kv,
                     head_dim=head_dim,
-                    bit_width=bits,
+                    bit_width=iso_bits,
                     layer_idx=layer_idx,
                     codebook_dir=codebook_path,
                     seed=42,
@@ -84,7 +127,7 @@ def make_prompt_cache(
             return TurboQuantKVCache(
                 num_heads=n_kv,
                 head_dim=head_dim,
-                bit_width=bits,
+                bit_width=tq_bits,
                 layer_idx=layer_idx,
                 codebook_dir=codebook_path,
                 seed=42,
@@ -209,8 +252,16 @@ def load_prompt_cache(file_name, return_metadata=False):
     arrays = tree_unflatten(list(arrays.items()))
     cache_metadata = tree_unflatten(list(cache_metadata.items()))
     info, metadata, classes = cache_metadata
+
+    def _cache_class(name: str):
+        if name == "KimiMLAIsoQuantCache":
+            from .kimi_mla_isoquant_dkv import KimiMLAIsoQuantCache
+
+            return KimiMLAIsoQuantCache
+        return globals()[name]
+
     cache = [
-        globals()[c].from_state(state, meta_state)
+        _cache_class(c).from_state(state, meta_state)
         for c, state, meta_state in zip(classes, arrays, info)
     ]
     if return_metadata:
@@ -926,6 +977,12 @@ class CacheList(_BaseCache):
     def __getitem__(self, idx):
         return self.caches[idx]
 
+    def __len__(self):
+        return len(self.caches)
+
+    def __iter__(self):
+        return iter(self.caches)
+
     def is_trimmable(self):
         return all(c.is_trimmable() for c in self.caches)
 
@@ -1535,3 +1592,4 @@ class BatchRotatingKVCache(_BaseCache):
 
 # Registered by name for load_prompt_cache / save_prompt_cache deserialization.
 from .mlx_turboquant import TurboQuantKVCache  # noqa: E402, F401
+from .mlx_isoquant import IsoQuantKVCache  # noqa: E402, F401

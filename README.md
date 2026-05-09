@@ -84,6 +84,9 @@ This repo:
 
 ## Key Insight
 
+![Unified memory constraint: 800 GB of expert weights, 128 GB of counter space](docs/images/01-unified-memory.png)
+*RAM is the counter space; the SSD is the back alley. A 1T-parameter model is 384 experts trying to work in a space designed for eight.*
+
 The bottleneck is not attention compute -- it is KV reconstruction.
 
 Standard pipelines dequantise KV back to FP16, materialise full tensors, then run attention via GEMM. The reconstruction itself is the cost -- it saturates memory bandwidth before compute even begins.
@@ -430,11 +433,17 @@ A 60-layer model with d_k = 128 at 8K context demands gigabytes of KV storage al
 
 ## Mixture-of-Experts
 
+![MoE routing: the router calls only top-K specialists per token; the rest wait offline](docs/images/02-moe-routing.png)
+*The router calls only top-K specialists per token. The rest wait offline — 384 experts, 8 active at once.*
+
 A Mixture-of-Experts (MoE) layer replaces the single feed-forward network with E parallel expert networks. A learned gating network scores all E experts for the current token, picks the top-K by score, and routes the token only to those. The output is the weighted sum of their activations.
 
 Only the top-K experts are active per token (typically K = 2 or K = 8). A model with E = 384 experts and K = 8 activates only ~2% of expert parameters per token — 1 trillion total parameters, but only ~3B active at any moment.
 
 Some architectures include a **shared expert** that is always active regardless of routing, added on top of the top-K output. Its weights tend to capture common knowledge that every token needs.
+
+![Shared expert: always-resident, kept at higher precision because its weight distribution has high kurtosis](docs/images/03-shared-expert.png)
+*The shared expert touches every token. Its weights stay at Q8_0 — too high-kurtosis (10.10 vs 0.41 for routed experts) to compress aggressively.*
 
 ---
 
@@ -479,6 +488,9 @@ graph LR
 
 **Step 4. Bit-pack and store.** At 3-bit, 128 dimensions pack into 48 bytes — versus 256 bytes at FP16. A ~5x compression.
 
+![KV cache compression: 128 dimensions packed into 48 bytes at 3-bit](docs/images/04-kv-compression.png)
+*Each token's KV vector stamped at 3-bit packed. 128 dimensions into 48 bytes — 5x compression without losing the signal.*
+
 ---
 
 ## IsoQuant: WHT + SO(4)
@@ -486,6 +498,9 @@ graph LR
 IsoQuant splits the head dimension into groups of 4 and rotates each group using a **quaternion sandwich** — a pair of quaternions (one left, one right) that together perform a full rotation in 4D space (SO(4)). This is structurally equivalent to a 4×4 orthogonal matrix but requires only 8 parameters instead of 16, and applies in O(1) per group.
 
 The full pipeline: first a global Walsh-Hadamard Transform (a butterfly-style operation that mixes all dimensions in O(d log d)) to decorrelate globally, then the per-group SO(4) rotations to achieve local isotropy.
+
+![IsoQuant rotation: WHT global mix followed by SO(4) per-group fine rotation](docs/images/05-isoquant-rotation.png)
+*WHT global mix spreads correlation across all dimensions; SO(4) fine rotation then normalises each group of four. Together they make quantisation error uniform — so 3-bit holds without distorting the dot products that drive attention.*
 
 ### Error Bound
 
@@ -530,6 +545,9 @@ Kernel D uses 1,408 FMAs (896 WHT butterfly + 512 SO(4) block matvecs) versus 16
 ### Inverse Rotation
 
 IsoQuant's block-diagonal quaternion rotations are not self-cancelling — the inverse must be applied explicitly. Concretely: swap the left and right quaternions, conjugate both, and apply them in reverse order. Without this step, the output lives in the rotated coordinate space and is meaningless — perplexity explodes from 7.05 to 15,369.
+
+![Inverse rotation: without it, outputs from different compression passes contaminate each other](docs/images/07-inverse-rotation.png)
+*Without the inverse rotation, outputs from different rotated spaces bleed into each other. Perplexity explodes from 7.05 to 15,369 — the model collapses completely.*
 
 ---
 
